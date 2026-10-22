@@ -18,9 +18,9 @@ from urllib.parse import urlsplit
 import httpx
 from dotenv import load_dotenv
 from memory import ConversationStore, STYLE_CHANGE
-from music import encode_voice, music_requested, parse_score
-from piano import make_piano
-from arrangement import make_song, parse_arrangement
+from music import music_requested, parse_score
+from arrangement import parse_arrangement
+from audio_job import render_audio
 
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("semyon")
@@ -42,6 +42,7 @@ class Settings:
     cooldown: float = 10
     probability: float = 0.25
     timeout: float = 90
+    audio_timeout: float = 90
 
     @classmethod
     def load(cls) -> Settings:
@@ -56,12 +57,13 @@ class Settings:
                 cooldown=float(os.getenv("COOLDOWN_SECONDS", "10")),
                 probability=float(os.getenv("BANANA_PROBABILITY", "0.25")),
                 timeout=float(os.getenv("REQUEST_TIMEOUT", "90")),
+                audio_timeout=float(os.getenv("AUDIO_TIMEOUT_SECONDS", "90")),
             )
         except ValueError:
             raise BotError("Проверь числовые значения в .env.") from None
-        if not all(math.isfinite(v) for v in (settings.cooldown, settings.probability, settings.timeout)):
+        if not all(math.isfinite(v) for v in (settings.cooldown, settings.probability, settings.timeout, settings.audio_timeout)):
             raise BotError("Числовые настройки должны быть конечными.")
-        if settings.cooldown < 0 or not 0 <= settings.probability <= 1 or settings.timeout <= 0:
+        if settings.cooldown < 0 or not 0 <= settings.probability <= 1 or settings.timeout <= 0 or settings.audio_timeout <= 0:
             raise BotError("Неверные интервалы или вероятность в .env.")
         parsed = urlsplit(settings.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.query or parsed.fragment:
@@ -291,9 +293,8 @@ class Semyon:
                 try:
                     use_nano = bool(re.search(r"\b(?:nano(?:maestro)?|наномаэстро|наномаестро|локальн\w*)\b", text, re.I))
                     solo = bool(re.search(r"только\s+(?:на\s+)?(?:пианино|роял[ье])", text, re.I))
-                    if solo:
-                        wav, duration = await asyncio.to_thread(make_piano, score, use_nano)
-                    else:
+                    arrangement = None
+                    if not solo:
                         for attempt in range(2):
                             try:
                                 arrangement = parse_arrangement(await self.gateway.arrange(
@@ -306,11 +307,10 @@ class Semyon:
                             arrangement["speech"] = []
                         if re.search(r"без\s+(?:барабанов|ударных)", text, re.I):
                             arrangement["drums"] = []
-                        wav, duration = await asyncio.to_thread(make_song, score, use_nano, arrangement)
-                    voice = await asyncio.to_thread(encode_voice, wav)
+                    audio = await render_audio(score, use_nano, arrangement, timeout=self.settings.audio_timeout)
                 except RuntimeError as exc:
                     raise BotError(str(exc)) from None
-                sent = await self.telegram.send_voice(chat_id, message["message_id"], voice, duration, topic)
+                sent = await self.telegram.send_voice(chat_id, message["message_id"], audio.voice, audio.duration, topic)
                 parts = ["пианино"]
                 if not solo and arrangement["drums"]:
                     parts.append("барабаны")

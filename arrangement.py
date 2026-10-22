@@ -15,13 +15,14 @@ RATE = 48000
 DRUM_NOTES = {35, 36, 38, 39, 42, 44, 46, 49, 51}
 
 
-def parse_arrangement(content: str, beats: int = 16) -> dict:
+def parse_arrangement(content: str, beats: int = 16, allow_empty: bool = False) -> dict:
     try:
         data = json.loads(content[content.index("{"):content.rindex("}") + 1])
         drums, speech = data["drums"], data["speech"]
-        if not isinstance(drums, list) or not 1 <= len(drums) <= 32:
+        minimum = 0 if allow_empty else 1
+        if not isinstance(drums, list) or not minimum <= len(drums) <= 32:
             raise ValueError
-        if not isinstance(speech, list) or not 1 <= len(speech) <= 4:
+        if not isinstance(speech, list) or not minimum <= len(speech) <= 4:
             raise ValueError
         for hit in drums:
             if type(hit["midi"]) is not int or hit["midi"] not in DRUM_NOTES:

@@ -9,6 +9,7 @@ import httpx
 from bot import BotError, Gateway, Settings, Semyon, Telegram, trigger
 from memory import ConversationStore, STYLE_CHANGE
 from music import encode_voice, music_requested, parse_score, render_wav
+from audio_job import AudioError, AudioResult
 
 
 def message(text="Семён", chat=-123, topic=0):
@@ -44,6 +45,7 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
         self.arrangement = {"drums": [{"midi": 36, "beat": 0, "velocity": 70}],
                             "speech": [{"beat": 0, "text": "С вами Семён."}]}
         self.gateway.arrange.return_value = json.dumps(self.arrangement)
+        self.audio = AudioResult(b"OggSvoice", 11, 12345)
         self.bot = Semyon(self.settings, self.telegram, self.gateway,
                           {"username": "semen_bot", "id": 1}, Path(self.temp.name) / "state.json")
 
@@ -182,8 +184,7 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
                  "chords": [[48, 52, 55]] * 4}
         self.gateway.compose.return_value = json.dumps(score)
         self.telegram.send_voice.return_value = {"message_id": 1000}
-        with patch("bot.make_song", return_value=(b"RIFF", 11)), \
-             patch("bot.encode_voice", return_value=b"OggSvoice"):
+        with patch("bot.render_audio", new=AsyncMock(return_value=self.audio)):
             await self.bot.handle(message("сыграй на пианино что-нибудь"))
         self.gateway.reply.assert_not_awaited()
         self.gateway.compose.assert_awaited_once()
@@ -206,19 +207,18 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
         score = {"tempo": 100, "melody": [{"midi": 64, "beats": 1}] * 16,
                  "chords": [[48, 52, 55]] * 4}
         self.gateway.compose.return_value = json.dumps(score)
-        with patch("bot.make_song", return_value=(b"RIFF", 11)) as renderer, \
-             patch("bot.encode_voice", return_value=b"OggSvoice"):
+        with patch("bot.render_audio", new=AsyncMock(return_value=self.audio)) as renderer:
             await self.bot.handle(message("Семён, сыграй через NanoMaestro"))
-        renderer.assert_called_once_with(score, True, self.arrangement)
+        renderer.assert_awaited_once_with(score, True, self.arrangement, timeout=90)
         self.telegram.send_voice.assert_awaited_once()
 
     async def test_piano_only_skips_arranging_and_tts(self):
         score = {"tempo": 100, "melody": [{"midi": 64, "beats": 1}] * 16,
                  "chords": [[48, 52, 55]] * 4}
         self.gateway.compose.return_value = json.dumps(score)
-        with patch("bot.make_piano", return_value=(b"RIFF", 11)), \
-             patch("bot.encode_voice", return_value=b"OggSvoice"):
+        with patch("bot.render_audio", new=AsyncMock(return_value=self.audio)) as renderer:
             await self.bot.handle(message("Семён, сыграй только пианино"))
+        renderer.assert_awaited_once_with(score, False, None, timeout=90)
         self.gateway.arrange.assert_not_awaited()
         self.telegram.send_voice.assert_awaited_once()
 
@@ -226,10 +226,18 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
         score = {"tempo": 100, "melody": [{"midi": 64, "beats": 1}] * 16,
                  "chords": [[48, 52, 55]] * 4}
         self.gateway.compose.return_value = json.dumps(score)
-        with patch("bot.make_song", return_value=(b"RIFF", 11)) as renderer, \
-             patch("bot.encode_voice", return_value=b"OggSvoice"):
+        with patch("bot.render_audio", new=AsyncMock(return_value=self.audio)) as renderer:
             await self.bot.handle(message("Семён, сыграй без речи"))
         self.assertEqual(renderer.call_args.args[2]["speech"], [])
+
+    async def test_failed_audio_job_is_queued_without_sending(self):
+        score = {"tempo": 100, "melody": [{"midi": 64, "beats": 1}] * 16,
+                 "chords": [[48, 52, 55]] * 4}
+        self.gateway.compose.return_value = json.dumps(score)
+        with patch("bot.render_audio", new=AsyncMock(side_effect=AudioError("Генератор остановлен"))):
+            await self.bot.handle(message("Семён, сыграй"))
+        self.telegram.send_voice.assert_not_awaited()
+        self.assertIsNotNone(self.bot.memory.next_reply_due())
 
 
 class LongChain(unittest.TestCase):

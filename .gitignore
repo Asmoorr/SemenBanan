@@ -4,6 +4,8 @@ __pycache__/
 state.json
 state.tmp
 .runtime.pid
+.runtime/
 memory.sqlite3*
 assets/
 comparison/
+examples/
