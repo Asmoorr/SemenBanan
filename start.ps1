@@ -12,12 +12,12 @@ if (-not (Test-Path '.venv\Scripts\python.exe')) {
     py -3 -m venv .venv
     if ($LASTEXITCODE -ne 0) { throw 'Install Python 3.10+ first.' }
 }
-& '.\.venv\Scripts\python.exe' -c 'import importlib.util, sys; sys.exit(not all(importlib.util.find_spec(name) for name in ["httpx", "dotenv", "mido", "numpy", "onnxruntime"]))'
+& '.\.venv\Scripts\python.exe' -c 'import importlib.util, sys; sys.exit(not all(importlib.util.find_spec(name) for name in ["httpx", "dotenv", "mido", "numpy", "onnxruntime", "piper"]))'
 if ($LASTEXITCODE -ne 0) {
     & '.\.venv\Scripts\python.exe' -m pip install -r requirements-music.txt
     if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
 }
-if (-not (Test-Path 'assets\nanomaestro\model.onnx') -or -not (Test-Path 'assets\TimGM6mb.sf2')) {
+if (-not (Test-Path 'assets\nanomaestro\model.onnx') -or -not (Test-Path 'assets\GeneralUser-GS.sf2') -or -not (Test-Path 'assets\speech\denis.onnx.json')) {
     & '.\.venv\Scripts\python.exe' setup_music.py
     if ($LASTEXITCODE -ne 0) { throw 'Music setup failed.' }
 }

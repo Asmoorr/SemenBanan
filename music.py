@@ -107,7 +107,7 @@ def render_wav(score: dict) -> tuple[bytes, int]:
     return output.getvalue(), math.ceil(duration)
 
 
-def encode_voice(wav_bytes: bytes) -> bytes:
+def ffmpeg_executable() -> str:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         try:
@@ -115,11 +115,16 @@ def encode_voice(wav_bytes: bytes) -> bytes:
             ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
         except (ImportError, RuntimeError):
             raise RuntimeError("Установи FFmpeg или пакет imageio-ffmpeg для голосовых сообщений.") from None
+    return ffmpeg
+
+
+def encode_voice(wav_bytes: bytes) -> bytes:
+    ffmpeg = ffmpeg_executable()
     try:
         result = subprocess.run(
             [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "wav", "-i", "pipe:0",
-             "-af", "loudnorm=I=-18:TP=-1.5:LRA=9", "-ac", "1", "-c:a", "libopus",
-             "-b:a", "48k", "-f", "ogg", "pipe:1"],
+             "-af", "loudnorm=I=-18:TP=-1.5:LRA=9", "-ac", "2", "-ar", "48000", "-c:a", "libopus",
+             "-b:a", "96k", "-f", "ogg", "pipe:1"],
             input=wav_bytes, capture_output=True, check=True, timeout=30,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):

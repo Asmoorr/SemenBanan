@@ -5,18 +5,19 @@ import hashlib
 import io
 from pathlib import Path
 import platform
-import tarfile
 from urllib.request import urlopen
 import zipfile
 
 ROOT = Path(__file__).resolve().parent / "assets"
 REVISION = "9a64dd24b3a550a6101f868af71bdc9960376e26"
 HF = f"https://huggingface.co/utkucoban/NanoMaestro-Realtime/resolve/{REVISION}/NanoMaestro-Light"
+FONT_SOURCE = "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/684543d5e5efaef08d02be50dcda8d552478fa60"
+VOICE_SOURCE = "https://huggingface.co/rhasspy/piper-voices/resolve/5041a7a49ae5b3a0f30e6837769eb03fdbb231bd/ru/ru_RU/denis/medium"
 
 
 def download(url: str, digest: str) -> bytes:
     with urlopen(url, timeout=90) as response:
-        data = response.read(40 * 1024 * 1024)
+        data = response.read(80 * 1024 * 1024)
     if hashlib.sha256(data).hexdigest() != digest:
         raise RuntimeError("Контрольная сумма загруженного файла не совпала.")
     return data
@@ -24,14 +25,14 @@ def download(url: str, digest: str) -> bytes:
 
 def main() -> None:
     ROOT.mkdir(exist_ok=True)
-    soundfont = ROOT / "TimGM6mb.sf2"
+    soundfont = ROOT / "GeneralUser-GS.sf2"
     if not soundfont.exists():
-        data = download(
-            "https://deb.debian.org/debian/pool/main/t/timgm6mb-soundfont/timgm6mb-soundfont_1.3.orig.tar.gz",
-            "af8f3a00e416dfb262bcaa904a1c84df04a51b72bbc1313aed012bc754bdf99b")
-        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-            member = archive.getmember("timgm6mb-soundfont_1.3/TimGM6mb.sf2")
-            soundfont.write_bytes(archive.extractfile(member).read())
+        soundfont.write_bytes(download(f"{FONT_SOURCE}/GeneralUser-GS.sf2",
+                                       "9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe"))
+    license_path = ROOT / "GeneralUser-GS-LICENSE.txt"
+    if not license_path.exists():
+        license_path.write_bytes(download(f"{FONT_SOURCE}/documentation/LICENSE.txt",
+                                          "7b32efefdf95ce38a043799f0659853ddc00fbaa14d8c50f0aca16b9b8b405be"))
     if platform.system() == "Windows":
         if platform.machine().lower() not in {"amd64", "x86_64"}:
             raise RuntimeError("Переносимый FluidSynth подготовлен для Windows x64.")
@@ -54,7 +55,16 @@ def main() -> None:
         target.parent.mkdir(exist_ok=True)
         if not target.exists() or hashlib.sha256(target.read_bytes()).hexdigest() != digest:
             target.write_bytes(download(f"{HF}/{filename}", digest))
-    print("Пианино и NanoMaestro Light готовы. На Linux/macOS также установи FluidSynth.")
+    for filename, digest, target_name in [
+        ("ru_RU-denis-medium.onnx", "15fab56e11a097858ee115545d0f697fc2a316c41a291a5362349fb870411b0a", "denis.onnx"),
+        ("ru_RU-denis-medium.onnx.json", "831c860dac0b5073eaa81610a0a638ec23d90a6cf8e5f871b4485c2cec3767c8", "denis.onnx.json"),
+        ("MODEL_CARD", "8b5d685dd80f8ad3f8dbbe1c56b16bb0809f00c144af3642dbcf3b707eb89c12", "MODEL_CARD"),
+    ]:
+        target = ROOT / "speech" / target_name
+        target.parent.mkdir(exist_ok=True)
+        if not target.exists() or hashlib.sha256(target.read_bytes()).hexdigest() != digest:
+            target.write_bytes(download(f"{VOICE_SOURCE}/{filename}", digest))
+    print("Пианино, NanoMaestro Light и Piper Denis готовы. На Linux/macOS также установи FluidSynth.")
 
 
 if __name__ == "__main__":

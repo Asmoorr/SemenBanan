@@ -6,6 +6,7 @@ import io
 import json
 import math
 from pathlib import Path
+import random
 import shutil
 import subprocess
 import tempfile
@@ -37,10 +38,10 @@ def render_piano(notes: list[dict], tempo: int) -> tuple[bytes, int]:
 
     portable = ASSETS / "fluidsynth/bin/fluidsynth.exe"
     executable = str(portable) if portable.exists() else shutil.which("fluidsynth")
-    soundfont = ASSETS / "TimGM6mb.sf2"
+    soundfont = ASSETS / "GeneralUser-GS.sf2"
     if not executable or not soundfont.exists():
         raise RuntimeError("Пианино не установлено: запусти python setup_music.py.")
-    if not notes or len(notes) > 1000 or not 35 <= tempo <= 240:
+    if not notes or len(notes) > 3000 or not 35 <= tempo <= 240:
         raise RuntimeError("Неверная или слишком большая партитура.")
     midi = mido.MidiFile(ticks_per_beat=480)
     track = mido.MidiTrack()
@@ -49,18 +50,29 @@ def render_piano(notes: list[dict], tempo: int) -> tuple[bytes, int]:
     for channel in (0, 1):
         track.append(mido.Message("program_change", program=0, channel=channel))
     events = []
+    rng = random.Random(42)
     for note in notes:
         start, length, pitch = note["start"], note["beats"], note["midi"]
-        if not (0 <= start < 32 and 0 < length <= 16 and 21 <= pitch <= 108):
+        if not (0 <= start < 64 and 0 < length <= 16 and 21 <= pitch <= 108):
             raise RuntimeError("Нота выходит за допустимые границы.")
         channel = note.get("channel", 0)
-        velocity = max(25, min(110, int(note["velocity"])))
-        events.extend([(round(start * 480), 1, pitch, velocity, channel),
-                       (round((start + length) * 480), 0, pitch, 0, channel)])
+        velocity = max(25, min(105, int(note["velocity"]) + rng.randint(-4, 4)))
+        # At most 8 ms of timing variation; musical positions stay intact.
+        start = max(0.0, start + rng.uniform(-0.008, 0.008) * tempo / 60)
+        events.extend([
+            (round(start * 480), 3, mido.Message("note_on", note=pitch, velocity=velocity, channel=channel)),
+            (round((start + length) * 480), 0, mido.Message("note_off", note=pitch, channel=channel)),
+        ])
+    end = max(n["start"] + n["beats"] for n in notes)
+    for channel in (0, 1):
+        for bar_start in range(0, math.ceil(end / 4) * 4, 4):
+            # Brief pedal lift at each bar prevents an accumulating blur.
+            events.append((bar_start * 480, 2, mido.Message("control_change", control=64, value=80, channel=channel)))
+            lift = min(bar_start + 3.92, end + 0.1)
+            events.append((round(lift * 480), 1, mido.Message("control_change", control=64, value=0, channel=channel)))
     previous = 0
-    for tick, on, pitch, velocity, channel in sorted(events):
-        track.append(mido.Message("note_on" if on else "note_off", note=pitch,
-                                  velocity=velocity, channel=channel, time=tick - previous))
+    for tick, _, event in sorted(events, key=lambda event: event[:2]):
+        track.append(event.copy(time=tick - previous))
         previous = tick
     track.append(mido.MetaMessage("end_of_track"))
     with tempfile.TemporaryDirectory(prefix="semyon-piano-") as folder:
@@ -68,8 +80,10 @@ def render_piano(notes: list[dict], tempo: int) -> tuple[bytes, int]:
         midi.save(midi_path)
         try:
             subprocess.run(
-                [executable, "-ni", "-g", "0.6", "-r", "24000", "-T", "wav",
-                 "-o", "synth.chorus.active=0", "-F", str(wav_path), str(soundfont), str(midi_path)],
+                [executable, "-ni", "-g", "0.5", "-r", "48000", "-T", "wav",
+                 "-o", "synth.chorus.active=0", "-o", "synth.reverb.level=0.22",
+                 "-o", "synth.reverb.room-size=0.45", "-o", "synth.reverb.width=60",
+                 "-F", str(wav_path), str(soundfont), str(midi_path)],
                 capture_output=True, check=True, timeout=30,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             audio = wav_path.read_bytes()
@@ -95,8 +109,10 @@ class NanoMaestro:
         self.session = ort.InferenceSession(str(ASSETS / "nanomaestro/model.onnx"),
                                            sess_options=options, providers=["CPUExecutionProvider"])
 
-    def compose(self, score: dict, seed: int | None = None) -> list[dict]:
-        """Continue one bar supplied by OpenClaw; generate three bars locally."""
+    def compose(self, score: dict, seed: int | None = None, bars: int = 4) -> list[dict]:
+        """Continue one bar supplied by OpenClaw for up to 16 bars total."""
+        if type(bars) is not int or not 4 <= bars <= 16:
+            raise RuntimeError("Длина пьесы должна быть от 4 до 16 тактов.")
         np = self.np
         rng = np.random.default_rng(seed)
         prompt = ["BOS", f"BPM_{score['tempo']}", "GRID_64", "BAR"]
@@ -125,7 +141,7 @@ class NanoMaestro:
         pending_pitch, pending_duration = None, None
         previous = "POS_0"
         deadline = time.monotonic() + 20
-        for _ in range(1600):
+        for _ in range(bars * 400):
             if time.monotonic() > deadline:
                 raise RuntimeError("NanoMaestro не закончила пьесу за 20 секунд.")
             if previous.startswith("NOTE_"):
@@ -144,7 +160,7 @@ class NanoMaestro:
             if token == "BAR":
                 bar += 1
                 pos, chord_size = 0, 0
-                if bar >= 4:
+                if bar >= bars:
                     break
             elif token.startswith("POS_"):
                 pos, chord_size = int(token[4:]), 0
@@ -154,13 +170,13 @@ class NanoMaestro:
                 pending_duration = min(4.0, int(token[4:]) / 16)
             elif token.startswith("VEL_") and pending_pitch is not None and pending_duration:
                 start = bar * 4 + pos / 16
-                notes.append(dict(start=start, beats=min(pending_duration, 16 - start),
+                notes.append(dict(start=start, beats=min(pending_duration, bars * 4 - start),
                                   midi=pending_pitch, velocity=int(token[4:]) * 13))
                 pending_pitch, pending_duration = None, None
                 chord_size += 1
             step(token)
             previous = token
-        if bar < 4 or len(notes) < len(primer) + 8:
+        if bar < bars or len(notes) < len(primer) + 8 or max(n["start"] for n in notes) < (bars - 1) * 4:
             raise RuntimeError("NanoMaestro вернула слишком короткую пьесу.")
         return notes
 

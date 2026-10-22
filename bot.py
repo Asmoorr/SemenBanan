@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from memory import ConversationStore, STYLE_CHANGE
 from music import encode_voice, music_requested, parse_score
 from piano import make_piano
+from arrangement import make_song, parse_arrangement
 
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("semyon")
@@ -147,6 +148,24 @@ class Gateway:
         return await self._complete(system, json.dumps(
             {"conversation_chain": context[-8:], "request": current}, ensure_ascii=False), 12000)
 
+    async def arrange(self, context: list[dict[str, str]], current: dict[str, str], beats: int = 16,
+                      style_requests: list[str] | None = None) -> str:
+        system = (self.persona + "\nРежим аранжировки: выдай ТОЛЬКО JSON с барабанами и речью. "
+                  'Формат: {"drums":[{"midi":36,"beat":0,"velocity":70}],'
+                  '"speech":[{"beat":0,"text":"С вами Семён. Бананы в студию."}]}. '
+                  "drums — повторяющийся рисунок одного такта 4/4, от 1 до 32 ударов, "
+                  "beat от 0 до 3.75 с шагом 0.25, velocity 25–105. "
+                  "Допустимые MIDI: 35,36 бочка; 38,39 малый и хлопок; 42,44,46 хэты; 49,51 тарелки. "
+                  "Сделай негромкий ритм, подходящий к просьбе, без перегруза тарелками. "
+                  f"Всего в пьесе {beats} долей. speech — короткие русские фразы Семёна поверх музыки, "
+                  f"каждая максимум 80 символов, beat от 0 до {beats - 4}. "
+                  + ("Одна фраза максимум 45 символов на beat 0." if beats <= 16 else
+                     "Две-три фразы максимум 60 символов каждая. Разнеси их на 16–20 долей.") +
+                  " Это разговорная речь, не пение. Не имитируй голоса реальных людей. Не вызывай инструменты.")
+        return await self._complete(system, json.dumps(
+            {"conversation_chain": context[-4:], "request": current,
+             "character_requests": style_requests or []}, ensure_ascii=False), 6000)
+
     async def _complete(self, system: str, user: str, limit: int = 1200) -> str:
         headers = {"Authorization": f"Bearer {self.settings.gateway_token}"} if self.settings.gateway_token else {}
         # No stable user/session key: persisted chain context is supplied explicitly.
@@ -271,12 +290,34 @@ class Semyon:
                             raise BotError("Модель дважды вернула неверные ноты.") from None
                 try:
                     use_nano = bool(re.search(r"\b(?:nano(?:maestro)?|наномаэстро|наномаестро|локальн\w*)\b", text, re.I))
-                    wav, duration = await asyncio.to_thread(make_piano, score, use_nano)
+                    solo = bool(re.search(r"только\s+(?:на\s+)?(?:пианино|роял[ье])", text, re.I))
+                    if solo:
+                        wav, duration = await asyncio.to_thread(make_piano, score, use_nano)
+                    else:
+                        for attempt in range(2):
+                            try:
+                                arrangement = parse_arrangement(await self.gateway.arrange(
+                                    context, current, style_requests=self.memory.style_requests(chat_id)))
+                                break
+                            except RuntimeError:
+                                if attempt:
+                                    raise
+                        if re.search(r"без\s+(?:речи|голоса|слов)", text, re.I):
+                            arrangement["speech"] = []
+                        if re.search(r"без\s+(?:барабанов|ударных)", text, re.I):
+                            arrangement["drums"] = []
+                        wav, duration = await asyncio.to_thread(make_song, score, use_nano, arrangement)
                     voice = await asyncio.to_thread(encode_voice, wav)
                 except RuntimeError as exc:
                     raise BotError(str(exc)) from None
                 sent = await self.telegram.send_voice(chat_id, message["message_id"], voice, duration, topic)
-                answer = "[Семён сыграл мелодию на пианино голосовым сообщением" + (", NanoMaestro]" if use_nano else "]")
+                parts = ["пианино"]
+                if not solo and arrangement["drums"]:
+                    parts.append("барабаны")
+                if not solo and arrangement["speech"]:
+                    parts.append("речь")
+                answer = ("[Семён записал: " + ", ".join(parts) +
+                          (", NanoMaestro]" if use_nano else "]"))
             else:
                 answer = await self.gateway.reply(context, current, self.memory.style_requests(chat_id))
                 payload: dict[str, Any] = {

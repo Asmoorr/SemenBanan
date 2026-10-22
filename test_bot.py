@@ -41,6 +41,9 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
         self.telegram = AsyncMock()
         self.gateway = AsyncMock()
         self.gateway.reply.return_value = "Банановый комитет одобряет."
+        self.arrangement = {"drums": [{"midi": 36, "beat": 0, "velocity": 70}],
+                            "speech": [{"beat": 0, "text": "С вами Семён."}]}
+        self.gateway.arrange.return_value = json.dumps(self.arrangement)
         self.bot = Semyon(self.settings, self.telegram, self.gateway,
                           {"username": "semen_bot", "id": 1}, Path(self.temp.name) / "state.json")
 
@@ -179,7 +182,7 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
                  "chords": [[48, 52, 55]] * 4}
         self.gateway.compose.return_value = json.dumps(score)
         self.telegram.send_voice.return_value = {"message_id": 1000}
-        with patch("bot.make_piano", return_value=(b"RIFF", 11)), \
+        with patch("bot.make_song", return_value=(b"RIFF", 11)), \
              patch("bot.encode_voice", return_value=b"OggSvoice"):
             await self.bot.handle(message("сыграй на пианино что-нибудь"))
         self.gateway.reply.assert_not_awaited()
@@ -203,11 +206,30 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
         score = {"tempo": 100, "melody": [{"midi": 64, "beats": 1}] * 16,
                  "chords": [[48, 52, 55]] * 4}
         self.gateway.compose.return_value = json.dumps(score)
-        with patch("bot.make_piano", return_value=(b"RIFF", 11)) as renderer, \
+        with patch("bot.make_song", return_value=(b"RIFF", 11)) as renderer, \
              patch("bot.encode_voice", return_value=b"OggSvoice"):
             await self.bot.handle(message("Семён, сыграй через NanoMaestro"))
-        renderer.assert_called_once_with(score, True)
+        renderer.assert_called_once_with(score, True, self.arrangement)
         self.telegram.send_voice.assert_awaited_once()
+
+    async def test_piano_only_skips_arranging_and_tts(self):
+        score = {"tempo": 100, "melody": [{"midi": 64, "beats": 1}] * 16,
+                 "chords": [[48, 52, 55]] * 4}
+        self.gateway.compose.return_value = json.dumps(score)
+        with patch("bot.make_piano", return_value=(b"RIFF", 11)), \
+             patch("bot.encode_voice", return_value=b"OggSvoice"):
+            await self.bot.handle(message("Семён, сыграй только пианино"))
+        self.gateway.arrange.assert_not_awaited()
+        self.telegram.send_voice.assert_awaited_once()
+
+    async def test_speech_can_be_disabled_in_request(self):
+        score = {"tempo": 100, "melody": [{"midi": 64, "beats": 1}] * 16,
+                 "chords": [[48, 52, 55]] * 4}
+        self.gateway.compose.return_value = json.dumps(score)
+        with patch("bot.make_song", return_value=(b"RIFF", 11)) as renderer, \
+             patch("bot.encode_voice", return_value=b"OggSvoice"):
+            await self.bot.handle(message("Семён, сыграй без речи"))
+        self.assertEqual(renderer.call_args.args[2]["speech"], [])
 
 
 class LongChain(unittest.TestCase):
