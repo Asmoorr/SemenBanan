@@ -18,7 +18,8 @@ from urllib.parse import urlsplit
 import httpx
 from dotenv import load_dotenv
 from memory import ConversationStore, STYLE_CHANGE
-from music import encode_voice, music_requested, parse_score, render_wav
+from music import encode_voice, music_requested, parse_score
+from piano import make_piano
 
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("semyon")
@@ -269,12 +270,13 @@ class Semyon:
                         if attempt:
                             raise BotError("Модель дважды вернула неверные ноты.") from None
                 try:
-                    wav, duration = render_wav(score)
-                    voice = encode_voice(wav)
+                    use_nano = bool(re.search(r"\b(?:nano(?:maestro)?|наномаэстро|наномаестро|локальн\w*)\b", text, re.I))
+                    wav, duration = await asyncio.to_thread(make_piano, score, use_nano)
+                    voice = await asyncio.to_thread(encode_voice, wav)
                 except RuntimeError as exc:
                     raise BotError(str(exc)) from None
                 sent = await self.telegram.send_voice(chat_id, message["message_id"], voice, duration, topic)
-                answer = "[Семён сыграл мелодию на пианино голосовым сообщением]"
+                answer = "[Семён сыграл мелодию на пианино голосовым сообщением" + (", NanoMaestro]" if use_nano else "]")
             else:
                 answer = await self.gateway.reply(context, current, self.memory.style_requests(chat_id))
                 payload: dict[str, Any] = {

@@ -118,7 +118,8 @@ def encode_voice(wav_bytes: bytes) -> bytes:
     try:
         result = subprocess.run(
             [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "wav", "-i", "pipe:0",
-             "-ac", "1", "-c:a", "libopus", "-b:a", "48k", "-f", "ogg", "pipe:1"],
+             "-af", "loudnorm=I=-18:TP=-1.5:LRA=9", "-ac", "1", "-c:a", "libopus",
+             "-b:a", "48k", "-f", "ogg", "pipe:1"],
             input=wav_bytes, capture_output=True, check=True, timeout=30,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):

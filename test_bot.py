@@ -179,7 +179,7 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
                  "chords": [[48, 52, 55]] * 4}
         self.gateway.compose.return_value = json.dumps(score)
         self.telegram.send_voice.return_value = {"message_id": 1000}
-        with patch("bot.render_wav", return_value=(b"RIFF", 11)), \
+        with patch("bot.make_piano", return_value=(b"RIFF", 11)), \
              patch("bot.encode_voice", return_value=b"OggSvoice"):
             await self.bot.handle(message("сыграй на пианино что-нибудь"))
         self.gateway.reply.assert_not_awaited()
@@ -198,6 +198,16 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             result = await Telegram(client, "unused").send_voice(-123, 10, b"OggSvoice", 11)
         self.assertEqual(result["message_id"], 11)
+
+    async def test_explicit_nano_request_selects_local_composer(self):
+        score = {"tempo": 100, "melody": [{"midi": 64, "beats": 1}] * 16,
+                 "chords": [[48, 52, 55]] * 4}
+        self.gateway.compose.return_value = json.dumps(score)
+        with patch("bot.make_piano", return_value=(b"RIFF", 11)) as renderer, \
+             patch("bot.encode_voice", return_value=b"OggSvoice"):
+            await self.bot.handle(message("Семён, сыграй через NanoMaestro"))
+        renderer.assert_called_once_with(score, True)
+        self.telegram.send_voice.assert_awaited_once()
 
 
 class LongChain(unittest.TestCase):

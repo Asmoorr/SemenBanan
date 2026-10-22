@@ -5,3 +5,5 @@ state.json
 state.tmp
 .runtime.pid
 memory.sqlite3*
+assets/
+comparison/
