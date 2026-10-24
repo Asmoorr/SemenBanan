@@ -22,7 +22,7 @@ class Arrangement(unittest.TestCase):
     """Проверки аранжировки и сведения дорожек."""
 
     def test_music_is_lower_during_speech(self) -> None:
-        """Проверяет приглушение музыки на участках речи.
+        """Проверяет мягкое приглушение музыки без провала на участках речи.
 
         :return: Не возвращает значение.
         """
@@ -68,7 +68,9 @@ class Arrangement(unittest.TestCase):
 
             return abs(2 * np.mean(samples[sl] * np.sin(2 * np.pi * 440 * t[sl])))
 
-        self.assertLess(piano_amplitude(1.5, 2.5), piano_amplitude(0.2, 0.7) * 0.6)
+        instrumental_ratio = piano_amplitude(1.5, 2.5) / piano_amplitude(0.2, 0.7)
+        self.assertGreater(instrumental_ratio, 0.75)
+        self.assertLess(instrumental_ratio, 0.95)
 
     def test_rejects_unbounded_patterns_and_speech(self) -> None:
         """Проверяет ограничения барабанного рисунка и речи.
@@ -92,7 +94,7 @@ class Arrangement(unittest.TestCase):
             parse_arrangement(json.dumps(data))
 
     @unittest.skipUnless(
-        (ASSETS / "speech/denis.onnx").exists(),
+        (ASSETS / "speech/silero-v5_6-ru.pt").exists(),
         "Run tools/setup_assets.py for TTS integration tests",
     )
     def test_russian_tts_and_mix_render_without_clipping(self) -> None:
@@ -105,7 +107,7 @@ class Arrangement(unittest.TestCase):
         speech = synthesize_speech("С вами Семён. Бананы на месте.")
 
         with wave.open(io.BytesIO(speech)) as wav:
-            self.assertEqual(wav.getframerate(), 22050)
+            self.assertEqual(wav.getframerate(), 48000)
             self.assertGreater(wav.getnframes(), wav.getframerate())
 
         mixed, duration = mix_tracks(speech, speech, speech)

@@ -14,6 +14,7 @@ from semen_banan.errors import BotError
 from semen_banan.generation.prompts import load_prompts
 from semen_banan.generation.service import MusicGenerator
 from semen_banan.integrations.openclaw import OpenClawClient
+from semen_banan.integrations.openclaw_images import OpenClawImageGenerator
 from semen_banan.integrations.telegram import TelegramClient
 from semen_banan.polling import poll
 from semen_banan.storage.cooldown import CooldownStore
@@ -38,6 +39,7 @@ async def run(mode: str, output: Path | None = None, request: str | None = None)
         )
         gateway = OpenClawClient(gateway_client, settings)
         music = MusicGenerator(gateway, AudioJobRunner(paths), settings.audio_timeout)
+        images = OpenClawImageGenerator(paths, settings)
 
         if mode == "check-gateway":
             print(
@@ -65,6 +67,25 @@ async def run(mode: str, output: Path | None = None, request: str | None = None)
             destination.write_bytes(reply.audio.voice)
             print(f"Музыка готова: {destination.resolve()} ({reply.audio.duration} с)")
 
+            return
+
+        if mode == "check-image":
+            current_image_message: ContextMessage = {
+                "name": "Проверка",
+                "text": request or prompts.image_request,
+            }
+            decision = await MessageRouter(gateway).route(
+                [], current_image_message, {"force_addressed": True}
+            )
+            if decision.mode != ReplyMode.IMAGE or decision.image is None:
+                raise BotError("Модель не распознала просьбу нарисовать картинку.")
+            image_reply = await images.generate(
+                decision.image, "diagnostic:" + decision.image.prompt
+            )
+            destination = output or paths.runtime / "checks" / "image.jpg"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(image_reply.path.read_bytes())
+            print(f"Картинка готова: {destination.resolve()}")
             return
 
         if not settings.token:
@@ -96,7 +117,14 @@ async def run(mode: str, output: Path | None = None, request: str | None = None)
         if mode == "run":
             memory = resource_stack.enter_context(SqliteConversationStore(paths.database))
             conversation_service = ConversationService(
-                settings, telegram, gateway, bot_identity, memory, CooldownStore(paths.state), music
+                settings,
+                telegram,
+                gateway,
+                bot_identity,
+                memory,
+                CooldownStore(paths.state),
+                music,
+                images,
             )
 
         await poll(telegram, conversation_service, bot_identity, discover=mode == "discover-chats")

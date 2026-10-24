@@ -2,7 +2,7 @@
 Set-Location $PSScriptRoot
 $semyonBackground = $args -contains '-Background'
 $semyonBotArgs = @($args | Where-Object { $_ -ne '-Background' })
-$semyonDiagnostic = @($semyonBotArgs | Where-Object { $_ -in @('--check', '--check-gateway', '--check-music', '--help', '-h') }).Count -gt 0
+$semyonDiagnostic = @($semyonBotArgs | Where-Object { $_ -in @('--check', '--check-gateway', '--check-music', '--check-image', '--help', '-h') }).Count -gt 0
 if ($semyonBackground -and $semyonBotArgs.Count -gt 0) { throw 'Запускай диагностические режимы без -Background.' }
 $env:SEMEN_BANAN_HOME = $PSScriptRoot
 if (-not $semyonDiagnostic -and (Test-Path '.runtime.pid')) {
@@ -19,12 +19,12 @@ if (-not (Test-Path '.venv\Scripts\python.exe')) {
 }
 & '.\.venv\Scripts\python.exe' -c "import sys; sys.exit(sys.version_info[:2] != (3, 13))"
 if ($LASTEXITCODE -ne 0) { throw 'Для проекта требуется Python 3.13.' }
-& '.\.venv\Scripts\python.exe' -c "import importlib.util, sys; sys.exit(not all(importlib.util.find_spec(name) for name in 'semen_banan httpx dotenv mido numpy onnxruntime piper'.split()))"
+& '.\.venv\Scripts\python.exe' -c "import importlib.util, sys; sys.exit(not all(importlib.util.find_spec(name) for name in 'semen_banan httpx dotenv mido numpy onnxruntime piper torch PIL'.split()))"
 if ($LASTEXITCODE -ne 0) {
     & '.\.venv\Scripts\python.exe' -m pip install -r requirements-music.txt
     if ($LASTEXITCODE -ne 0) { throw 'Не удалось установить зависимости.' }
 }
-if (-not (Test-Path 'assets\nanomaestro\model.onnx') -or -not (Test-Path 'assets\GeneralUser-GS.sf2') -or -not (Test-Path 'assets\speech\denis.onnx.json')) {
+if (-not (Test-Path 'assets\nanomaestro\model.onnx') -or -not (Test-Path 'assets\GeneralUser-GS.sf2') -or -not (Test-Path 'assets\speech\denis.onnx.json') -or -not (Test-Path 'assets\speech\silero-v5_6-ru.pt')) {
     & '.\.venv\Scripts\python.exe' tools/setup_assets.py
     if ($LASTEXITCODE -ne 0) { throw 'Не удалось установить музыкальные компоненты.' }
 }

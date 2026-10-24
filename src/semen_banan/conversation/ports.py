@@ -39,6 +39,20 @@ class Telegram(Protocol):
         """
         ...
 
+    async def send_photo(
+        self, chat_id: int, message_id: int, photo: bytes, caption: str = "", topic: int = 0
+    ) -> Any:
+        """Отправляет картинку ответом в исходную тему Telegram.
+
+        :param chat_id: Идентификатор группы.
+        :param message_id: Идентификатор исходного сообщения.
+        :param photo: Байты подготовленного JPEG.
+        :param caption: Подпись изображения.
+        :param topic: Идентификатор темы, ноль для общего чата.
+        :return: Данные отправленного сообщения Telegram.
+        """
+        ...
+
 
 class Gateway(Protocol):
     """Контракт запросов языковой модели через OpenClaw."""

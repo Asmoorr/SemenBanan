@@ -146,7 +146,7 @@ class AudioJob(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(output), [])
 
     @unittest.skipUnless(
-        (ROOT / "assets/speech/denis.onnx").exists() and importlib.util.find_spec("piper"),
+        (ROOT / "assets/speech/silero-v5_6-ru.pt").exists() and importlib.util.find_spec("torch"),
         "Install music assets for worker integration test",
     )
     async def test_real_job_returns_audio_after_model_process_exits(self) -> None:

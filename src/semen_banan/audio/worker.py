@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ def generate(request: dict[str, Any]) -> tuple[bytes, int]:
     :param request: Исходная просьба или задание генерации.
     :return: Байты OGG/Opus и длительность записи в секундах.
     """
+    from semen_banan.audio.customization import AudioCustomization
     from semen_banan.audio.models import AudioRequest
     from semen_banan.audio.pipeline import AudioPipeline
     from semen_banan.audio.validation import parse_arrangement, parse_score
@@ -24,11 +26,17 @@ def generate(request: dict[str, Any]) -> tuple[bytes, int]:
     if type(use_nano) is not bool:
         raise ValueError("Неверный выбор музыкальной модели.")
 
+    customization = AudioCustomization.parse(request.get("customization", {}))
+    if customization.tempo_bpm is not None:
+        score["tempo"] = customization.tempo_bpm
+    total_beats = 16
+    if customization.duration_seconds is not None:
+        total_beats = math.ceil(customization.duration_seconds * score["tempo"] / 240) * 4
     arrangement = request.get("arrangement")
 
     if arrangement is not None:
         arrangement = parse_arrangement(
-            json.dumps(arrangement, ensure_ascii=False), allow_empty=True
+            json.dumps(arrangement, ensure_ascii=False), beats=total_beats, allow_empty=True
         )
 
     seed = request.get("seed")
@@ -36,7 +44,7 @@ def generate(request: dict[str, Any]) -> tuple[bytes, int]:
     if seed is not None and (type(seed) is not int or not 0 <= seed < 2**32):
         raise ValueError("Неверный seed генератора.")
 
-    return AudioPipeline().generate(AudioRequest(score, use_nano, arrangement, seed))
+    return AudioPipeline().generate(AudioRequest(score, use_nano, arrangement, seed, customization))
 
 
 def main() -> int:

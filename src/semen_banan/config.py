@@ -81,6 +81,10 @@ class Settings:
     probability: float = 0.25
     timeout: float = 90
     audio_timeout: float = 90
+    image_timeout: float = 180
+    image_model: str = "openai/gpt-image-2"
+    image_executable: str = "openclaw"
+    image_wsl_distro: str = ""
 
     @classmethod
     def load(cls, paths: AppPaths | None = None) -> Settings:
@@ -106,6 +110,10 @@ class Settings:
                 probability=float(os.getenv("BANANA_PROBABILITY", "0.25")),
                 timeout=float(os.getenv("REQUEST_TIMEOUT", "90")),
                 audio_timeout=float(os.getenv("AUDIO_TIMEOUT_SECONDS", "90")),
+                image_timeout=float(os.getenv("IMAGE_TIMEOUT_SECONDS", "180")),
+                image_model=os.getenv("OPENCLAW_IMAGE_MODEL", "openai/gpt-image-2").strip(),
+                image_executable=os.getenv("OPENCLAW_IMAGE_EXECUTABLE", "openclaw").strip(),
+                image_wsl_distro=os.getenv("OPENCLAW_IMAGE_WSL_DISTRO", "").strip(),
             )
         except ValueError:
             raise BotError("Проверь числовые значения в .env.") from None
@@ -117,6 +125,7 @@ class Settings:
                 settings.probability,
                 settings.timeout,
                 settings.audio_timeout,
+                settings.image_timeout,
             )
         ):
             raise BotError("Числовые настройки должны быть конечными.")
@@ -126,6 +135,7 @@ class Settings:
             or not 0 <= settings.probability <= 1
             or settings.timeout <= 0
             or settings.audio_timeout <= 0
+            or not 10 <= settings.image_timeout <= 600
         ):
             raise BotError("Неверные интервалы или вероятность в .env.")
 
@@ -142,5 +152,8 @@ class Settings:
 
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", settings.agent):
             raise BotError("Неверный OPENCLAW_AGENT_ID.")
+
+        if not settings.image_model or not settings.image_executable:
+            raise BotError("Укажи модель и исполняемый файл OpenClaw для картинок.")
 
         return settings

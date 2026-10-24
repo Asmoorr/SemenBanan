@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 
 from semen_banan.audio.jobs import AudioJobRunner
@@ -53,11 +54,26 @@ class MusicGenerator:
         :param options: Проверенные параметры музыкального режима.
         :return: Готовое аудио и описание записи для истории.
         """
+        current_message = {**current_message, "music_parameters": options.to_payload()}
         score = await self._compose(conversation_context, current_message)
+        if options.customization.tempo_bpm is not None:
+            score["tempo"] = options.customization.tempo_bpm
+        total_beats = 16
+        if options.customization.duration_seconds is not None:
+            total_beats = (
+                math.ceil(options.customization.duration_seconds * score["tempo"] / 240) * 4
+            )
         arrangement = None
 
         if not options.solo:
-            arrangement = await self._arrange(conversation_context, current_message, style_requests)
+            arrangement = await self._arrange(
+                conversation_context,
+                current_message,
+                style_requests,
+                beats=total_beats,
+                drums_enabled=options.drums,
+                speech_enabled=options.speech,
+            )
 
             if not options.speech:
                 arrangement["speech"] = []
@@ -66,24 +82,48 @@ class MusicGenerator:
                 arrangement["drums"] = []
 
         try:
-            audio = await self.audio.render(
-                score, options.use_nano, arrangement, timeout=self.timeout
-            )
+            if options.customization.is_default:
+                audio = await self.audio.render(
+                    score, options.use_nano, arrangement, timeout=self.timeout
+                )
+            else:
+                audio = await self.audio.render(
+                    score,
+                    options.use_nano,
+                    arrangement,
+                    timeout=self.timeout,
+                    customization=options.customization,
+                )
         except RuntimeError as exc:
             raise BotError(str(exc)) from exc
 
-        parts = ["пианино"]
+        parts = [instrument.label for instrument in options.customization.instruments]
 
         if arrangement is not None:
             if arrangement["drums"]:
                 parts.append("барабаны")
 
             if arrangement["speech"]:
-                parts.append("речь")
+                voice_settings = options.customization.voice_settings
+                parts.append(
+                    f"речь: {voice_settings.voice}, скорость {voice_settings.speed:g}, "
+                    f"высота {voice_settings.pitch_semitones:+g}, "
+                    f"эффект {voice_settings.effect.value} {voice_settings.effect_amount}%"
+                )
 
         if options.use_nano:
             parts.append("NanoMaestro")
 
+        if not options.customization.is_default:
+            parts.extend([f"{audio.duration} секунд", f"{score['tempo']} BPM"])
+            if options.customization.volumes:
+                parts.append(
+                    "громкость "
+                    + ", ".join(
+                        f"{track} {volume}%"
+                        for track, volume in options.customization.volumes.items()
+                    )
+                )
         return MusicReply(audio, "[Семён записал: " + ", ".join(parts) + "]")
 
     async def _compose(
@@ -111,12 +151,19 @@ class MusicGenerator:
         conversation_context: ConversationContext,
         current_message: ContextMessage,
         style_requests: list[str] | None,
+        *,
+        beats: int = 16,
+        drums_enabled: bool = True,
+        speech_enabled: bool = True,
     ) -> Arrangement:
         """Получает аранжировку и повторяет запрос при неверном JSON.
 
         :param conversation_context: Контекст текущей темы или цепочки сообщений.
         :param current_message: Текущее сообщение в формате контекста модели.
         :param style_requests: Сохранённые пожелания к характеру и манере речи.
+        :param beats: Музыкальная длина записи в долях.
+        :param drums_enabled: Требуется ли непустая партия барабанов.
+        :param speech_enabled: Требуется ли непустая речевая партия.
         :return: Проверенная аранжировка.
         """
         correction: Correction | None = None
@@ -126,11 +173,17 @@ class MusicGenerator:
                 conversation_context,
                 current_message,
                 style_requests=style_requests,
+                beats=beats,
                 correction=correction,
             )
 
             try:
-                return parse_arrangement(content)
+                arrangement = parse_arrangement(content, beats, allow_empty=True)
+                if drums_enabled and not arrangement["drums"]:
+                    raise RuntimeError("В аранжировке отсутствует запрошенная партия барабанов.")
+                if speech_enabled and not arrangement["speech"]:
+                    raise RuntimeError("В аранжировке отсутствует запрошенная речь.")
+                return arrangement
             except RuntimeError as exc:
                 LOGGER.warning("%s", exc)
 

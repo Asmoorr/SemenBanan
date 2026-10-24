@@ -28,21 +28,26 @@ def main() -> None:
     mode_arguments.add_argument(
         "--check-music", action="store_true", help="Создать музыкальный OGG без отправки в Telegram"
     )
-    parser.add_argument("--output", type=Path, help="Файл OGG для --check-music")
+    mode_arguments.add_argument(
+        "--check-image", action="store_true", help="Создать картинку без отправки в Telegram"
+    )
+    parser.add_argument(
+        "--output", type=Path, help="Файл OGG для --check-music или JPEG для --check-image"
+    )
     parser.add_argument(
         "--request",
         default=None,
-        help="Музыкальная просьба для --check-music",
+        help="Просьба для --check-music или --check-image",
     )
     arguments = parser.parse_args()
 
-    if arguments.output is not None and not arguments.check_music:
-        parser.error("--output используется только с --check-music")
+    if arguments.output is not None and not (arguments.check_music or arguments.check_image):
+        parser.error("--output используется только с --check-music или --check-image")
 
     mode = next(
         (
             name
-            for name in ("discover-chats", "check-gateway", "check-music", "check")
+            for name in ("discover-chats", "check-gateway", "check-music", "check-image", "check")
             if getattr(arguments, name.replace("-", "_"))
         ),
         "run",

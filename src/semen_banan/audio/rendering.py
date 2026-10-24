@@ -13,12 +13,15 @@ from semen_banan.audio.models import NoteSequence
 from semen_banan.config import AppPaths
 
 
-def render_piano(notes: NoteSequence, tempo: int, assets: Path | None = None) -> tuple[bytes, int]:
+def render_piano(
+    notes: NoteSequence, tempo: int, assets: Path | None = None, *, program: int = 0
+) -> tuple[bytes, int]:
     """Озвучивает ноты через FluidSynth без открытия аудиоустройства.
 
     :param notes: Ноты с позициями, длительностями и силой нажатия.
     :param tempo: Темп пьесы в ударах в минуту.
     :param assets: Каталог музыкальных моделей и звуковых банков.
+    :param program: Номер тембра General MIDI от 0 до 127.
     :return: WAV-дорожка и её длительность в секундах.
     """
     import mido
@@ -33,8 +36,11 @@ def render_piano(notes: NoteSequence, tempo: int, assets: Path | None = None) ->
     if not executable or not soundfont_path.exists():
         raise RuntimeError("Пианино не установлено: запусти python tools/setup_assets.py.")
 
-    if not notes or len(notes) > 3000 or not 35 <= tempo <= 240:
+    if not notes or len(notes) > 12000 or not 35 <= tempo <= 240:
         raise RuntimeError("Неверная или слишком большая партитура.")
+
+    if type(program) is not int or not 0 <= program <= 127:
+        raise RuntimeError("Неверный номер музыкального тембра.")
 
     midi_file = mido.MidiFile(ticks_per_beat=480)
     midi_track = mido.MidiTrack()
@@ -42,7 +48,7 @@ def render_piano(notes: NoteSequence, tempo: int, assets: Path | None = None) ->
     midi_track.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(tempo)))
 
     for channel in (0, 1):
-        midi_track.append(mido.Message("program_change", program=0, channel=channel))
+        midi_track.append(mido.Message("program_change", program=program, channel=channel))
 
     events = []
     random_generator = random.Random(42)
@@ -50,7 +56,7 @@ def render_piano(notes: NoteSequence, tempo: int, assets: Path | None = None) ->
     for note in notes:
         start_beat, duration_beats, midi_pitch = note["start"], note["beats"], note["midi"]
 
-        if not (0 <= start_beat < 64 and 0 < duration_beats <= 16 and 21 <= midi_pitch <= 108):
+        if not (0 <= start_beat < 256 and 0 < duration_beats <= 16 and 21 <= midi_pitch <= 108):
             raise RuntimeError("Нота выходит за допустимые границы.")
 
         channel = note.get("channel", 0)

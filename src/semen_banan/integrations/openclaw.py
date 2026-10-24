@@ -69,7 +69,7 @@ class OpenClawClient:
                 },
                 ensure_ascii=False,
             ),
-            4000,
+            8000,
         )
 
     async def reply(

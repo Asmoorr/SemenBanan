@@ -18,6 +18,7 @@ from semen_banan.conversation.ports import ConversationStore, Cooldowns, Gateway
 from semen_banan.conversation.routing import MessageRouter, ReplyMode, ReplyTrigger, RouteDecision
 from semen_banan.errors import BotError
 from semen_banan.generation.service import MusicGenerator
+from semen_banan.integrations.openclaw_images import ImageGenerationError, OpenClawImageGenerator
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class ConversationService:
         memory: ConversationStore,
         cooldown: Cooldowns,
         music: MusicGenerator,
+        images: OpenClawImageGenerator | None = None,
     ) -> None:
         """Инициализирует компонент и сохраняет его зависимости.
 
@@ -44,6 +46,7 @@ class ConversationService:
         :param memory: Хранилище истории, характера и очереди.
         :param cooldown: Хранилище интервалов между ответами.
         :param music: Сервис создания музыкального ответа.
+        :param images: Генератор картинок через OpenClaw.
         :return: Не возвращает значение.
         """
         self.settings = settings
@@ -53,6 +56,7 @@ class ConversationService:
         self.memory = memory
         self.cooldown = cooldown
         self.music = music
+        self.images = images
         self.context_builder = ContextBuilder(memory)
         self.router = MessageRouter(gateway)
         self.last = cooldown.load()
@@ -266,28 +270,38 @@ class ConversationService:
                     topic_id,
                 )
                 answer = reply.description
+            elif decision.mode == ReplyMode.IMAGE:
+                assert decision.image is not None
+                if self.images is None:
+                    raise ImageGenerationError("Генерация картинок не настроена.")
+                image_reply = await self.images.generate(
+                    decision.image, f"{chat_id}:{message['message_id']}"
+                )
+                sent = await self.telegram.send_photo(
+                    chat_id,
+                    message["message_id"],
+                    image_reply.path.read_bytes(),
+                    image_reply.caption,
+                    topic_id,
+                )
+                answer = image_reply.description
             else:
                 answer = await self.gateway.reply(
                     conversation_context, current_message, self.memory.style_requests(chat_id)
                 )
-                payload: dict[str, Any] = {
-                    "chat_id": chat_id,
-                    "text": answer,
-                    "reply_parameters": {
-                        "message_id": message["message_id"],
-                        "allow_sending_without_reply": False,
-                    },
-                    "link_preview_options": {"is_disabled": True},
-                }
-
-                if topic_id:
-                    payload["message_thread_id"] = topic_id
-
-                sent = await self.telegram.call("sendMessage", **payload)
+                sent = await self.send_text(chat_id, message["message_id"], answer, topic_id)
 
             self.memory.record_bot(sent, chat_id, topic_id, message["message_id"], answer)
             self.memory.forget_reply(chat_id, message["message_id"])
             LOGGER.info("Ответ отправлен: chat_id=%s, trigger=%s", chat_id, reply_kind)
+        except ImageGenerationError as exc:
+            LOGGER.warning("%s", exc)
+            try:
+                sent = await self.send_text(chat_id, message["message_id"], str(exc), topic_id)
+                self.memory.record_bot(sent, chat_id, topic_id, message["message_id"], str(exc))
+                self.memory.forget_reply(chat_id, message["message_id"])
+            except BotError:
+                self.memory.queue_reply(message, reply_kind, time.time() + 30)
         except BotError as exc:
             LOGGER.warning("%s", exc)
 
@@ -296,6 +310,27 @@ class ConversationService:
         finally:
             self.last[chat_key] = time.time()
             self.save()
+
+    async def send_text(
+        self, chat_id: int, message_id: int, answer: str, topic_id: int
+    ) -> dict[str, Any]:
+        """Отправляет текст или понятную ошибку в исходную тему диалога.
+
+        :param chat_id: Идентификатор группы.
+        :param message_id: Идентификатор исходного сообщения.
+        :param answer: Готовая реплика бота.
+        :param topic_id: Идентификатор темы, ноль для общего чата.
+        :return: Данные отправленного сообщения.
+        """
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": answer,
+            "reply_parameters": {"message_id": message_id, "allow_sending_without_reply": False},
+            "link_preview_options": {"is_disabled": True},
+        }
+        if topic_id:
+            payload["message_thread_id"] = topic_id
+        return await self.telegram.call("sendMessage", **payload)
 
     async def process_pending(self) -> None:
         """Обрабатывает готовые задания и удаляет устаревшие.

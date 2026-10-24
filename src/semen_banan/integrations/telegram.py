@@ -87,3 +87,40 @@ class TelegramClient:
             )
 
         return response_data["result"]
+
+    async def send_photo(
+        self, chat_id: int, message_id: int, photo: bytes, caption: str = "", topic: int = 0
+    ) -> Any:
+        """Отправляет подготовленную картинку ответом на исходное сообщение.
+
+        :param chat_id: Идентификатор группы Telegram.
+        :param message_id: Идентификатор сообщения, на которое отвечает бот.
+        :param photo: Байты JPEG размером до десяти мегабайт.
+        :param caption: Подпись картинки без разметки.
+        :param topic: Тема группы, ноль для общего чата.
+        :return: Данные отправленной картинки Telegram.
+        """
+        if not photo.startswith(b"\xff\xd8\xff") or len(photo) > 10 * 1024 * 1024:
+            raise BotError("Картинка должна быть JPEG размером до 10 МБ.")
+        form_fields = {
+            "chat_id": str(chat_id),
+            "caption": caption[:500],
+            "reply_parameters": json.dumps(
+                {"message_id": message_id, "allow_sending_without_reply": False}
+            ),
+        }
+        if topic:
+            form_fields["message_thread_id"] = str(topic)
+        try:
+            response = await self.client.post(
+                f"{self.url}/sendPhoto",
+                data=form_fields,
+                files={"photo": ("semyon.jpg", photo, "image/jpeg")},
+                timeout=90,
+            )
+            response_data = response.json()
+        except (httpx.HTTPError, ValueError) as error:
+            raise BotError("Telegram: не удалось отправить картинку.") from error
+        if not isinstance(response_data, dict) or not response_data.get("ok"):
+            raise BotError("Telegram: ошибка отправки картинки.")
+        return response_data["result"]

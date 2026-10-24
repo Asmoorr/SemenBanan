@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from semen_banan.audio.customization import AudioCustomization
 from semen_banan.audio.models import ComposerKind
 from semen_banan.conversation.models import (
     ContextMessage,
@@ -14,6 +15,7 @@ from semen_banan.conversation.models import (
 )
 from semen_banan.conversation.ports import Gateway
 from semen_banan.errors import BotError
+from semen_banan.images.models import ImageOptions
 
 
 class ReplyMode(StrEnum):
@@ -22,6 +24,7 @@ class ReplyMode(StrEnum):
     IGNORE = "ignore"
     TEXT = "text"
     MUSIC = "music"
+    IMAGE = "image"
 
 
 class ReplyTrigger(StrEnum):
@@ -41,6 +44,7 @@ class MusicOptions:
     composer: ComposerKind = ComposerKind.SCORE
     drums: bool = True
     speech: bool = True
+    customization: AudioCustomization = field(default_factory=AudioCustomization)
 
     @property
     def use_nano(self) -> bool:
@@ -63,27 +67,39 @@ class MusicOptions:
 
         :return: Словарь с параметрами объекта.
         """
-        return {"composer": self.composer.value, "drums": self.drums, "speech": self.speech}
+        return {
+            "composer": self.composer.value,
+            "drums": self.drums,
+            "speech": self.speech,
+            **self.customization.to_payload(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
 class RouteDecision:
-    """Проверенный режим ответа, параметры музыки и изменение характера."""
+    """Проверенный режим, параметры музыки или картинки и изменение характера."""
 
     mode: ReplyMode
     trigger: ReplyTrigger
     music: MusicOptions | None = None
     style_request: str | None = None
+    image: ImageOptions | None = None
 
     def to_payload(self) -> dict[str, Any]:
         """Преобразует объект в данные для передачи через JSON.
 
         :return: Словарь с параметрами объекта.
         """
+        parameters: dict[str, Any] | None = None
+        if self.music is not None:
+            parameters = self.music.to_payload()
+        elif self.image is not None:
+            parameters = self.image.to_payload()
+
         return {
             "mode": self.mode.value,
             "trigger": self.trigger.value,
-            "parameters": self.music.to_payload() if self.music is not None else None,
+            "parameters": parameters,
             "style_request": self.style_request,
         }
 
@@ -126,27 +142,53 @@ class RouteDecision:
                 raise ValueError
 
             music = None
+            image = None
             parameters = routing_data["parameters"]
 
             if mode == ReplyMode.MUSIC:
-                if not isinstance(parameters, dict) or set(parameters) != {
-                    "composer",
-                    "drums",
-                    "speech",
-                }:
+                if (
+                    not isinstance(parameters, dict)
+                    or not {"composer", "drums", "speech"} <= set(parameters)
+                    or set(parameters)
+                    - {
+                        "composer",
+                        "drums",
+                        "speech",
+                        "duration_seconds",
+                        "tempo_bpm",
+                        "instruments",
+                        "volumes",
+                        "voice_settings",
+                    }
+                ):
                     raise ValueError
 
                 if type(parameters["drums"]) is not bool or type(parameters["speech"]) is not bool:
                     raise ValueError
 
                 music = MusicOptions(
-                    ComposerKind(parameters["composer"]), parameters["drums"], parameters["speech"]
+                    ComposerKind(parameters["composer"]),
+                    parameters["drums"],
+                    parameters["speech"],
+                    AudioCustomization.parse(
+                        {
+                            key: value
+                            for key, value in parameters.items()
+                            if key not in {"composer", "drums", "speech"}
+                        }
+                    ),
                 )
+            elif mode == ReplyMode.IMAGE:
+                image = ImageOptions.parse(parameters)
             elif parameters is not None:
                 raise ValueError
 
             return cls(
-                mode, trigger, music, style_request.strip() if style_request is not None else None
+                mode,
+                trigger,
+                music,
+                style_request.strip() if style_request is not None else None,
+                image,
             )
         except (ValueError, TypeError, KeyError):
             raise ValueError("Неверный режим или параметры маршрутизации.") from None

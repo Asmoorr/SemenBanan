@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, NotRequired, TypedDict
+
+from semen_banan.audio.customization import AudioCustomization
 
 
 class MelodyNote(TypedDict):
@@ -57,13 +59,17 @@ class AudioRequest:
     use_nano: bool = False
     arrangement: Arrangement | None = None
     seed: int | None = None
+    customization: AudioCustomization = field(default_factory=AudioCustomization)
 
     def to_payload(self) -> dict[str, Any]:
         """Преобразует объект в данные для передачи через JSON.
 
         :return: Словарь с параметрами объекта.
         """
-        return asdict(self)
+        payload = asdict(self)
+        payload["customization"] = self.customization.to_payload()
+
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

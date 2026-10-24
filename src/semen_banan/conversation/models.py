@@ -19,6 +19,7 @@ class ContextMessage(TypedDict):
     name: str
     text: str
     in_reply_to_semyon: NotRequired[str]
+    music_parameters: NotRequired[dict[str, Any]]
 
 
 type ConversationContext = list[ContextMessage]

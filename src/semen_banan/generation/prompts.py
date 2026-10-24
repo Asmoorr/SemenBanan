@@ -22,6 +22,7 @@ class PromptCatalog:
     short_speech: str
     long_speech: str
     gateway_request: str
+    image_request: str
     music_request: str
     comparison_request: str
     comparison_forms: tuple[str, ...]
@@ -78,6 +79,7 @@ class PromptCatalog:
                 long_speech=read_text("arrangement", "long_speech"),
                 gateway_request=read_text("diagnostics", "gateway_request"),
                 music_request=read_text("diagnostics", "music_request"),
+                image_request=read_text("diagnostics", "image_request"),
                 comparison_request=read_text("comparison", "request"),
                 comparison_forms=tuple(section_goals),
                 comparison_section_template=read_text("comparison", "section"),

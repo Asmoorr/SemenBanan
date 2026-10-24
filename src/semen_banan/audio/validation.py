@@ -21,7 +21,7 @@ def parse_score(content: str) -> Score:
         melody = score_data["melody"]
         chords = score_data["chords"]
 
-        if type(tempo) is not int or not 70 <= tempo <= 140:
+        if type(tempo) is not int or not 60 <= tempo <= 180:
             raise ValueError
 
         if not isinstance(melody, list) or not 8 <= len(melody) <= 40:

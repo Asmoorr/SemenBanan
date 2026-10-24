@@ -5,50 +5,21 @@ import json
 import logging
 import math
 import os
-import signal
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+from semen_banan.audio.customization import AudioCustomization
 from semen_banan.audio.models import Arrangement, AudioRequest, AudioResult, Score
 from semen_banan.config import AppPaths
+from semen_banan.processes import stop_worker
 
 LOGGER = logging.getLogger(__name__)
 
 
 class AudioError(RuntimeError):
     """Ошибка запуска, ожидания или результата аудиозадания."""
-
-
-async def stop_worker(process: asyncio.subprocess.Process) -> None:
-    """Останавливает генератор вместе с дочерними процессами.
-
-    :param process: Процесс генератора аудио.
-    :return: Не возвращает значение.
-    """
-    if process.returncode is not None:
-        return
-
-    if sys.platform == "win32":
-        termination_process = await asyncio.create_subprocess_exec(
-            str(Path(os.environ.get("SystemRoot", "C:\\Windows")) / "System32/taskkill.exe"),
-            "/PID",
-            str(process.pid),
-            "/T",
-            "/F",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        await asyncio.wait_for(termination_process.wait(), timeout=10)
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-    await asyncio.wait_for(process.communicate(), timeout=10)
 
 
 class AudioJobRunner:
@@ -84,6 +55,8 @@ class AudioJobRunner:
         use_nano: bool = False,
         arrangement: Arrangement | None = None,
         timeout: float = 90,
+        *,
+        customization: AudioCustomization | None = None,
     ) -> AudioResult:
         """Запускает изолированную генерацию и проверяет готовое аудио.
 
@@ -91,6 +64,7 @@ class AudioJobRunner:
         :param use_nano: Признак использования локальной модели NanoMaestro.
         :param arrangement: Параметры барабанов и речевых фраз.
         :param timeout: Максимальное время ожидания в секундах.
+        :param customization: Проверенные длительность, темп, инструменты и уровни.
         :return: Голосовое сообщение, его длительность и PID генератора.
         """
         if not math.isfinite(timeout) or timeout <= 0:
@@ -98,7 +72,10 @@ class AudioJobRunner:
 
         paths = self.paths
         request = json.dumps(
-            AudioRequest(score, use_nano, arrangement, self.seed).to_payload(), ensure_ascii=False
+            AudioRequest(
+                score, use_nano, arrangement, self.seed, customization or AudioCustomization()
+            ).to_payload(),
+            ensure_ascii=False,
         ).encode("utf-8")
         # Локальному генератору не нужны секреты Telegram и Gateway.
         worker_environment = {

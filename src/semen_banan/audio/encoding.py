@@ -24,13 +24,19 @@ def ffmpeg_executable() -> str:
     return ffmpeg
 
 
-def encode_voice(wav_bytes: bytes) -> bytes:
+def encode_voice(wav_bytes: bytes, *, master_gain: float = 1.0, normalize: bool = True) -> bytes:
     """Кодирует WAV в голосовое сообщение OGG/Opus.
 
     :param wav_bytes: Исходное аудио в формате WAV.
+    :param master_gain: Общая громкость от 0 до 1 после нормализации.
+    :param normalize: Нормализация громкости; отключается для точного баланса дорожек.
     :return: Байты готового голосового сообщения.
     """
+    if not 0 <= master_gain <= 1:
+        raise ValueError("Общая громкость должна быть от нуля до единицы.")
+
     ffmpeg = ffmpeg_executable()
+    normalization_filter = "loudnorm=I=-18:TP=-1.5:LRA=9," if normalize else ""
 
     try:
         encoding_result = subprocess.run(
@@ -44,7 +50,7 @@ def encode_voice(wav_bytes: bytes) -> bytes:
                 "-i",
                 "pipe:0",
                 "-af",
-                "loudnorm=I=-18:TP=-1.5:LRA=9",
+                f"{normalization_filter}volume={master_gain}",
                 "-ac",
                 "2",
                 "-ar",

@@ -20,15 +20,19 @@ FONT_SOURCE = "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/68454
 VOICE_SOURCE = "https://huggingface.co/rhasspy/piper-voices/resolve/5041a7a49ae5b3a0f30e6837769eb03fdbb231bd/ru/ru_RU/denis/medium"
 
 
-def download(url: str, expected_digest: str) -> bytes:
+def download(url: str, expected_digest: str, *, maximum_bytes: int = 80 * 1024 * 1024) -> bytes:
     """Загружает ресурс и проверяет его контрольную сумму.
 
     :param url: Адрес загрузки ресурса.
     :param expected_digest: Ожидаемая контрольная сумма SHA-256.
+    :param maximum_bytes: Максимальный размер загружаемого ресурса.
     :return: Байты проверенного ресурса.
     """
     with urlopen(url, timeout=90) as response:
-        downloaded_data = response.read(80 * 1024 * 1024)
+        downloaded_data = response.read(maximum_bytes + 1)
+
+    if len(downloaded_data) > maximum_bytes:
+        raise RuntimeError("Загружаемый ресурс слишком велик.")
 
     if hashlib.sha256(downloaded_data).hexdigest() != expected_digest:
         raise RuntimeError("Контрольная сумма загруженного файла не совпала.")
@@ -132,8 +136,30 @@ def main() -> None:
         ):
             destination_path.write_bytes(download(f"{VOICE_SOURCE}/{filename}", expected_digest))
 
+    for filename, url, expected_digest in (
+        (
+            "silero-v5_6-ru.pt",
+            "https://models.silero.ai/models/tts/ru/v5_6_ru.pt",
+            "04cc9b1d08ce38bcaa9d02c488d80d3e6806d17f7eaa7c95982f36a3cbf50b2e",
+        ),
+        (
+            "SILERO-LICENSE.txt",
+            "https://raw.githubusercontent.com/snakers4/silero-models/master/LICENSE",
+            "1349a4b6148492b44f629e64eed676612e234fe9a839e4f3b277c1482c8849f1",
+        ),
+    ):
+        destination_path = ASSETS_DIRECTORY / "speech" / filename
+        if (
+            not destination_path.exists()
+            or hashlib.sha256(destination_path.read_bytes()).hexdigest() != expected_digest
+        ):
+            downloaded_data = download(url, expected_digest, maximum_bytes=256 * 1024 * 1024)
+            temporary_path = destination_path.with_suffix(destination_path.suffix + ".download")
+            temporary_path.write_bytes(downloaded_data)
+            temporary_path.replace(destination_path)
+
     print(
-        "Пианино, NanoMaestro Light и Piper Denis готовы. На Linux/macOS также установи FluidSynth."
+        "Пианино, NanoMaestro Light, Silero v5.6 и Piper Denis готовы. На Linux/macOS также установи FluidSynth."
     )
 
 
