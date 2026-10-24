@@ -1,17 +1,21 @@
 """Create two local previews without posting anything to Telegram."""
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
-from pathlib import Path
 import time
+from pathlib import Path
 
 import httpx
 
-from bot import Gateway, Settings
-from music import encode_voice, parse_score
-from piano import local_composer, render_piano, score_notes
+from semen_banan.audio.composers import local_composer, score_notes
+from semen_banan.audio.encoding import encode_voice
+from semen_banan.audio.rendering import render_piano
+from semen_banan.audio.validation import parse_score
+from semen_banan.config import Settings
+from semen_banan.integrations.openclaw import OpenClawClient as Gateway
 
 
 async def compare(folder: Path, request: str, bars: int = 16, tempo: int = 110) -> None:
@@ -20,16 +24,25 @@ async def compare(folder: Path, request: str, bars: int = 16, tempo: int = 110) 
     settings = Settings.load()
     score = {"tempo": tempo, "melody": [], "chords": []}
     context = []
-    forms = ["изложи основную тему", "развей тему", "сделай вариацию", "подведи к завершению и закончи на тонике"]
+    forms = [
+        "изложи основную тему",
+        "развей тему",
+        "сделай вариацию",
+        "подведи к завершению и закончи на тонике",
+    ]
     async with httpx.AsyncClient(trust_env=False) as client:
         gateway = Gateway(client, settings)
         for index in range(bars // 4):
             action = forms[3] if index == bars // 4 - 1 and index else forms[index]
-            instruction = (f"{request}. Темп {tempo}. Это такты {index * 4 + 1}–{index * 4 + 4} "
-                           f"пьесы из {bars} тактов: {action}. Ровно 16 долей в этом фрагменте.")
+            instruction = (
+                f"{request}. Темп {tempo}. Это такты {index * 4 + 1}–{index * 4 + 4} "
+                f"пьесы из {bars} тактов: {action}. Ровно 16 долей в этом фрагменте."
+            )
             for attempt in range(2):
                 try:
-                    section = parse_score(await gateway.compose(context, {"name": "Сравнение", "text": instruction}))
+                    section = parse_score(
+                        await gateway.compose(context, {"name": "Сравнение", "text": instruction})
+                    )
                     if sum(n["beats"] for n in section["melody"]) != 16:
                         raise ValueError("Для сравнения нужны полные такты.")
                     break
@@ -38,7 +51,9 @@ async def compare(folder: Path, request: str, bars: int = 16, tempo: int = 110) 
                         raise
             score["melody"].extend(section["melody"])
             score["chords"].extend(section["chords"])
-            context.append({"name": "Предыдущий фрагмент", "text": json.dumps(section, ensure_ascii=False)})
+            context.append(
+                {"name": "Предыдущий фрагмент", "text": json.dumps(section, ensure_ascii=False)}
+            )
             print(f"OpenClaw: {index * 4 + 4}/{bars} bars", flush=True)
     folder.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
@@ -48,12 +63,24 @@ async def compare(folder: Path, request: str, bars: int = 16, tempo: int = 110) 
         wav, duration = render_piano(notes, score["tempo"])
         (folder / f"{name}.ogg").write_bytes(encode_voice(wav))
         print(f"{name}: {len(notes)} notes, {duration}s")
-    (folder / "comparison.json").write_text(json.dumps({
-        "request": request, "score": score, "nano_notes": nano_notes,
-        "nano_generation_seconds": elapsed, "seed": 42, "bars": bars,
-        "soundfont": "GeneralUser GS 2.0.3", "render_sample_rate": 48000,
-        "note": "Один такт от OpenClaw служит началом для NanoMaestro; звучание одинаковое.",
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    (folder / "comparison.json").write_text(
+        json.dumps(
+            {
+                "request": request,
+                "score": score,
+                "nano_notes": nano_notes,
+                "nano_generation_seconds": elapsed,
+                "seed": 42,
+                "bars": bars,
+                "soundfont": "GeneralUser GS 2.0.3",
+                "render_sample_rate": 48000,
+                "note": "Один такт от OpenClaw служит началом для NanoMaestro; звучание одинаковое.",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(f"NanoMaestro generation: {elapsed}s")
 
 

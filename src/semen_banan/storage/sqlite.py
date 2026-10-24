@@ -1,25 +1,13 @@
-"""Persistent reply chains and group-level character requests."""
 from __future__ import annotations
 
-import re
 import json
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 
-STYLE_CHANGE = re.compile(
-    r"(?:\b(?:поменя\w*|измени\w*|смен[иья]\w*|настро\w*|перестань|начни|будь|стань)\b"
-    r".{0,90}\b(?:характер\w*|стил\w*|манер\w*|поведен\w*|шут\w*|мат\w*|добр\w*|злее|мягче|грубее|дерзче|агрессивн\w*|вес[её]л\w*|спокойн\w*|серь[её]зн\w*|ироничн\w*|саркастичн\w*|приветлив\w*|токсичн\w*|мрачн\w*|ж[её]стч\w*|смешн\w*)\b)"
-    r"|(?:\b(?:характер\w*|стил\w*|манер\w*|поведен\w*)\b.{0,90}"
-    r"\b(?:поменя\w*|измен\w*|смен\w*|друг\w*)\b)"
-    r"|(?:\b(?:без мата|не матерись|меньше мата|больше мата)\b)",
-    re.I | re.S,
-)
-
-
-class ConversationStore:
-    def __init__(self, path: Path):
+class SqliteConversationStore:
+    def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
@@ -44,16 +32,23 @@ class ConversationStore:
                 PRIMARY KEY (chat_id, message_id)
             )""")
 
+    def __enter__(self) -> SqliteConversationStore:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
     def close(self) -> None:
         self.db.close()
 
-    def get(self, chat_id: int, message_id: int | None) -> sqlite3.Row | None:
+    def get(self, chat_id: int, message_id: int | None) -> dict[str, Any] | None:
         if message_id is None:
             return None
-        return self.db.execute(
+        row = self.db.execute(
             "SELECT * FROM messages WHERE chat_id=? AND message_id=?",
             (chat_id, message_id),
         ).fetchone()
+        return dict(row) if row is not None else None
 
     def record_incoming(self, message: dict[str, Any], bot_id: int, direct: bool) -> bool:
         chat_id = message["chat"]["id"]
@@ -69,24 +64,38 @@ class ConversationStore:
                 quoted_body = (quoted.get("text") or quoted.get("caption") or "")[:2000]
                 self.db.execute(
                     "INSERT OR IGNORE INTO messages VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
-                    (chat_id, parent_id, topic_id,
-                     "Семён" if quoted_is_bot else quoted_author.get("first_name", "Участник")[:80],
-                     quoted_body, int(quoted_is_bot), int(quoted_is_bot)),
+                    (
+                        chat_id,
+                        parent_id,
+                        topic_id,
+                        "Семён"
+                        if quoted_is_bot
+                        else quoted_author.get("first_name", "Участник")[:80],
+                        quoted_body,
+                        int(quoted_is_bot),
+                        int(quoted_is_bot),
+                    ),
                 )
                 parent = self.get(chat_id, parent_id)
             chain_active = direct or bool(parent and parent["in_bot_chain"])
             sender = message.get("from") or {}
             self.db.execute(
                 "INSERT OR IGNORE INTO messages VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
-                (chat_id, message_id, topic_id, parent_id,
-                 sender.get("first_name", "Участник")[:80],
-                 (message.get("text") or message.get("caption") or "")[:2000],
-                 int(chain_active)),
+                (
+                    chat_id,
+                    message_id,
+                    topic_id,
+                    parent_id,
+                    sender.get("first_name", "Участник")[:80],
+                    (message.get("text") or message.get("caption") or "")[:2000],
+                    int(chain_active),
+                ),
             )
         return chain_active
 
-    def record_bot(self, sent: dict[str, Any], chat_id: int, topic_id: int,
-                   parent_id: int, body: str) -> None:
+    def record_bot(
+        self, sent: dict[str, Any], chat_id: int, topic_id: int, parent_id: int, body: str
+    ) -> None:
         message_id = sent.get("message_id") if isinstance(sent, dict) else None
         if message_id is None:
             return
@@ -95,39 +104,6 @@ class ConversationStore:
                 "INSERT OR IGNORE INTO messages VALUES (?, ?, ?, ?, 'Семён', ?, 1, 1)",
                 (chat_id, message_id, topic_id, parent_id, body[:2000]),
             )
-
-    def context(self, chat_id: int, topic_id: int, parent_id: int | None,
-                current_id: int, max_chars: int = 60000) -> list[dict[str, str]]:
-        if parent_id is None:
-            rows = self.db.execute(
-                """SELECT name, body FROM messages
-                   WHERE chat_id=? AND topic_id=? AND message_id<?
-                   ORDER BY message_id DESC LIMIT 12""",
-                (chat_id, topic_id, current_id),
-            ).fetchall()
-        else:
-            rows = []
-            seen: set[int] = set()
-            cursor = parent_id
-            while cursor is not None and cursor not in seen:
-                seen.add(cursor)
-                row = self.get(chat_id, cursor)
-                if row is None:
-                    break
-                rows.append(row)
-                cursor = row["parent_id"]
-        result: list[dict[str, str]] = []
-        size = 0
-        for row in rows:
-            body = row["body"]
-            if size + len(body) > max_chars and result:
-                break
-            result.append({"name": row["name"], "text": body})
-            size += len(body)
-        result.reverse()
-        if len(result) < len(rows):
-            result.insert(0, {"name": "Контекст", "text": "Начало длинной цепочки сохранено в базе, но не вошло в текущий запрос."})
-        return result
 
     def add_style_request(self, chat_id: int, text: str) -> None:
         with self.db:
@@ -150,8 +126,13 @@ class ConversationStore:
             self.db.execute(
                 """INSERT INTO pending_replies VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(chat_id, message_id) DO UPDATE SET due_at=excluded.due_at""",
-                (chat_id, message["message_id"], due_at, kind,
-                 json.dumps(message, ensure_ascii=False)),
+                (
+                    chat_id,
+                    message["message_id"],
+                    due_at,
+                    kind,
+                    json.dumps(message, ensure_ascii=False),
+                ),
             )
 
     def next_reply_due(self) -> float | None:
@@ -172,3 +153,11 @@ class ConversationStore:
                 "DELETE FROM pending_replies WHERE chat_id=? AND message_id=?",
                 (chat_id, message_id),
             )
+
+    def recent_messages(self, chat_id: int, topic_id: int, current_id: int) -> list[dict[str, Any]]:
+        rows = self.db.execute(
+            "SELECT name, body FROM messages WHERE chat_id=? AND topic_id=? AND message_id<? "
+            "ORDER BY message_id DESC LIMIT 12",
+            (chat_id, topic_id, current_id),
+        ).fetchall()
+        return [dict(row) for row in rows]

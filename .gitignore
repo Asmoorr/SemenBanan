@@ -9,3 +9,10 @@ memory.sqlite3*
 assets/
 comparison/
 examples/
+
+.idea/
+*.egg-info/
+build/
+dist/
+.ruff_cache/
+.mypy_cache/

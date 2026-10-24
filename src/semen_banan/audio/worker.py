@@ -1,31 +1,31 @@
-"""SemenBanan: generate a single voice note and exit with all loaded models."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Any
 
 
 def generate(request: dict[str, Any]) -> tuple[bytes, int]:
-    # Only this short-lived process imports and uses the inference backends.
-    from arrangement import make_song, parse_arrangement
-    from music import encode_voice, parse_score
-    from piano import make_piano
+    from semen_banan.audio.models import AudioRequest
+    from semen_banan.audio.pipeline import AudioPipeline
+    from semen_banan.audio.validation import parse_arrangement, parse_score
 
     score = parse_score(json.dumps(request["score"], ensure_ascii=False))
     use_nano = request.get("use_nano", False)
     if type(use_nano) is not bool:
         raise ValueError("Неверный выбор музыкальной модели.")
     arrangement = request.get("arrangement")
-    if arrangement is None:
-        wav, duration = make_piano(score, use_nano)
-    else:
-        arrangement = parse_arrangement(json.dumps(arrangement, ensure_ascii=False), allow_empty=True)
-        wav, duration = make_song(score, use_nano, arrangement)
-    return encode_voice(wav), duration
+    if arrangement is not None:
+        arrangement = parse_arrangement(
+            json.dumps(arrangement, ensure_ascii=False), allow_empty=True
+        )
+    seed = request.get("seed")
+    if seed is not None and (type(seed) is not int or not 0 <= seed < 2**32):
+        raise ValueError("Неверный seed генератора.")
+    return AudioPipeline().generate(AudioRequest(score, use_nano, arrangement, seed))
 
 
 def main() -> int:
@@ -40,10 +40,14 @@ def main() -> int:
         request = json.loads(raw)
         voice, duration = generate(request)
         args.output.write_bytes(voice)
-        metadata.write_text(json.dumps({"duration": duration, "worker_pid": os.getpid()}), encoding="utf-8")
+        metadata.write_text(
+            json.dumps({"duration": duration, "worker_pid": os.getpid()}), encoding="utf-8"
+        )
         return 0
     except (ImportError, OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
-        metadata.write_text(json.dumps({"error": str(exc)[:300]}, ensure_ascii=False), encoding="utf-8")
+        metadata.write_text(
+            json.dumps({"error": str(exc)[:300]}, ensure_ascii=False), encoding="utf-8"
+        )
         return 1
 
 

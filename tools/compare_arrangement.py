@@ -1,18 +1,22 @@
 """Add shared drums and speech to an existing, reproducible piano comparison."""
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
-from pathlib import Path
 import time
+from pathlib import Path
 
 import httpx
 
-from arrangement import backing_tracks, mix_tracks, parse_arrangement
-from bot import Gateway, Settings
-from music import encode_voice
-from piano import render_piano, score_notes
+from semen_banan.audio.composers import score_notes
+from semen_banan.audio.encoding import encode_voice
+from semen_banan.audio.mixing import backing_tracks, mix_tracks
+from semen_banan.audio.rendering import render_piano
+from semen_banan.audio.validation import parse_arrangement
+from semen_banan.config import Settings
+from semen_banan.integrations.openclaw import OpenClawClient as Gateway
 
 
 async def compare(source: Path, folder: Path) -> None:
@@ -24,8 +28,15 @@ async def compare(source: Path, folder: Path) -> None:
         gateway = Gateway(client, settings)
         for attempt in range(2):
             try:
-                content = await gateway.arrange([], {
-                    "name": "Сравнение", "text": data["request"] + ". Добавь лёгкие барабаны и три короткие смешные фразы про бананы."}, beats)
+                content = await gateway.arrange(
+                    [],
+                    {
+                        "name": "Сравнение",
+                        "text": data["request"]
+                        + ". Добавь лёгкие барабаны и три короткие смешные фразы про бананы.",
+                    },
+                    beats,
+                )
                 arrangement = parse_arrangement(content, beats)
                 break
             except RuntimeError:
@@ -46,7 +57,9 @@ async def compare(source: Path, folder: Path) -> None:
     data["arrangement"] = arrangement
     data["backing_generation_seconds"] = elapsed
     data["speech_model"] = "Piper ru_RU-denis-medium"
-    (folder / "comparison.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    (folder / "comparison.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(f"Backing tracks generation: {elapsed}s", flush=True)
 
 
