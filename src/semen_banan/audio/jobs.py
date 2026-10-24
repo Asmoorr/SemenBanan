@@ -14,19 +14,24 @@ from pathlib import Path
 from semen_banan.audio.models import Arrangement, AudioRequest, AudioResult, Score
 from semen_banan.config import AppPaths
 
-LOG = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 class AudioError(RuntimeError):
-    """A failed or timed-out audio job."""
+    """Ошибка запуска, ожидания или результата аудиозадания."""
 
 
 async def stop_worker(process: asyncio.subprocess.Process) -> None:
-    """Stop descendants too: Windows venv launchers have a child Python process."""
+    """Останавливает генератор вместе с дочерними процессами.
+
+    :param process: Процесс генератора аудио.
+    :return: Не возвращает значение.
+    """
     if process.returncode is not None:
         return
+
     if sys.platform == "win32":
-        killer = await asyncio.create_subprocess_exec(
+        termination_process = await asyncio.create_subprocess_exec(
             str(Path(os.environ.get("SystemRoot", "C:\\Windows")) / "System32/taskkill.exe"),
             "/PID",
             str(process.pid),
@@ -36,22 +41,32 @@ async def stop_worker(process: asyncio.subprocess.Process) -> None:
             stderr=asyncio.subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        await asyncio.wait_for(killer.wait(), timeout=10)
+        await asyncio.wait_for(termination_process.wait(), timeout=10)
     else:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
     await asyncio.wait_for(process.communicate(), timeout=10)
 
 
 class AudioJobRunner:
+    """Управление отдельным процессом генерации голосового сообщения."""
+
     def __init__(
         self,
         paths: AppPaths,
         worker_command: tuple[str, ...] | None = None,
         seed: int | None = None,
     ) -> None:
+        """Инициализирует компонент и сохраняет его зависимости.
+
+        :param paths: Пути к рабочим данным приложения.
+        :param worker_command: Команда запуска генератора; None выбирает стандартный модуль.
+        :param seed: Начальное значение генератора случайных чисел.
+        :return: Не возвращает значение.
+        """
         self.seed = seed
         self.paths = paths
         self.worker_command = worker_command or (
@@ -70,60 +85,79 @@ class AudioJobRunner:
         arrangement: Arrangement | None = None,
         timeout: float = 90,
     ) -> AudioResult:
+        """Запускает изолированную генерацию и проверяет готовое аудио.
+
+        :param score: Партитура с темпом, мелодией и аккордами.
+        :param use_nano: Признак использования локальной модели NanoMaestro.
+        :param arrangement: Параметры барабанов и речевых фраз.
+        :param timeout: Максимальное время ожидания в секундах.
+        :return: Голосовое сообщение, его длительность и PID генератора.
+        """
         if not math.isfinite(timeout) or timeout <= 0:
             raise AudioError("Время ожидания генерации должно быть положительным.")
+
         paths = self.paths
         request = json.dumps(
             AudioRequest(score, use_nano, arrangement, self.seed).to_payload(), ensure_ascii=False
         ).encode("utf-8")
-        # Audio generation has no need for Telegram or Gateway credentials.
-        environment = {
+        # Локальному генератору не нужны секреты Telegram и Gateway.
+        worker_environment = {
             key: value
             for key, value in os.environ.items()
             if not key.startswith(("TELEGRAM_", "OPENCLAW_"))
         }
-        environment["SEMEN_BANAN_HOME"] = str(paths.home)
-        options = (
+        worker_environment["SEMEN_BANAN_HOME"] = str(paths.home)
+        process_options = (
             {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
             if sys.platform == "win32"
             else {"start_new_session": True}
         )
-        with tempfile.TemporaryDirectory(prefix="semenbanan-audio-") as directory:
-            output = Path(directory) / "voice.ogg"
+
+        with tempfile.TemporaryDirectory(prefix="semenbanan-audio-") as temporary_directory:
+            output = Path(temporary_directory) / "voice.ogg"
+
             try:
                 process = await asyncio.create_subprocess_exec(
                     *self.worker_command,
                     "--output",
                     str(output),
                     cwd=paths.home,
-                    env=environment,
+                    env=worker_environment,
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    **options,
+                    **process_options,
                 )
             except OSError:
                 raise AudioError("Не удалось запустить генератор аудио.") from None
+
             try:
                 await asyncio.wait_for(process.communicate(request), timeout=timeout)
             except TimeoutError:
                 await stop_worker(process)
+
                 raise AudioError(
                     "Генерация аудио не завершилась вовремя; процесс остановлен."
                 ) from None
             except asyncio.CancelledError:
                 await asyncio.shield(stop_worker(process))
+
                 raise
             finally:
                 if process.returncode is None:
                     await stop_worker(process)
+
             try:
-                result = json.loads(output.with_suffix(".json").read_text(encoding="utf-8"))
-                if result.get("error"):
-                    raise AudioError(str(result["error"])[:300])
+                worker_result = json.loads(output.with_suffix(".json").read_text(encoding="utf-8"))
+
+                if worker_result.get("error"):
+                    raise AudioError(str(worker_result["error"])[:300])
+
                 if process.returncode != 0:
                     raise ValueError
-                duration, worker_pid = result["duration"], result["worker_pid"]
+
+                duration, worker_pid = worker_result["duration"], worker_result["worker_pid"]
+
                 if (
                     type(duration) is not int
                     or not 0 < duration <= 90
@@ -131,12 +165,17 @@ class AudioJobRunner:
                     or worker_pid <= 0
                 ):
                     raise ValueError
+
                 if output.stat().st_size > 20 * 1024 * 1024:
                     raise ValueError
+
                 voice = output.read_bytes()
+
                 if not voice.startswith(b"OggS"):
                     raise ValueError
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 raise AudioError("Генератор не вернул готовое голосовое сообщение.") from None
-            LOG.info("Генератор аудио завершён: pid=%s, duration=%ss", worker_pid, duration)
+
+            LOGGER.info("Генератор аудио завершён: pid=%s, duration=%ss", worker_pid, duration)
+
             return AudioResult(voice=voice, duration=duration, worker_pid=worker_pid)

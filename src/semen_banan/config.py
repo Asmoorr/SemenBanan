@@ -14,37 +14,64 @@ from semen_banan.errors import BotError
 
 @dataclass(frozen=True, slots=True)
 class AppPaths:
+    """Пути к настройкам, данным и локальным ресурсам приложения."""
+
     home: Path
 
     @classmethod
     def load(cls) -> AppPaths:
-        configured = os.getenv("SEMEN_BANAN_HOME")
-        if configured:
-            return cls(Path(configured).expanduser().resolve())
+        """Определяет рабочий каталог из окружения или расположения проекта.
+
+        :return: Пути к данным текущего экземпляра приложения.
+        """
+        configured_home = os.getenv("SEMEN_BANAN_HOME")
+
+        if configured_home:
+            return cls(Path(configured_home).expanduser().resolve())
+
         for parent in Path(__file__).resolve().parents:
             if (parent / "pyproject.toml").is_file() and (parent / "src/semen_banan").is_dir():
                 return cls(parent)
+
         return cls(Path.cwd().resolve())
 
     @property
     def assets(self) -> Path:
+        """Определяет каталог локальных музыкальных ресурсов.
+
+        :return: Путь к моделям и звуковым банкам.
+        """
         return self.home / "assets"
 
     @property
     def state(self) -> Path:
+        """Определяет файл сохранённых интервалов.
+
+        :return: Путь к файлу state.json.
+        """
         return self.home / "state.json"
 
     @property
     def database(self) -> Path:
+        """Определяет файл истории и очереди ответов.
+
+        :return: Путь к базе SQLite.
+        """
         return self.home / "memory.sqlite3"
 
     @property
     def runtime(self) -> Path:
+        """Определяет каталог временных рабочих результатов.
+
+        :return: Путь к рабочему каталогу .runtime.
+        """
         return self.home / ".runtime"
 
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    """Проверенные параметры запуска и подключения внешних сервисов."""
+
     token: str
     chats: frozenset[int]
     base_url: str
@@ -57,14 +84,20 @@ class Settings:
 
     @classmethod
     def load(cls, paths: AppPaths | None = None) -> Settings:
+        """Читает окружение и проверяет параметры запуска.
+
+        :param paths: Пути к рабочим данным приложения.
+        :return: Проверенные настройки приложения.
+        """
         load_dotenv((paths or AppPaths.load()).home / ".env")
+
         try:
             settings = cls(
                 token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
                 chats=frozenset(
-                    int(v.strip())
-                    for v in os.getenv("ALLOWED_CHAT_IDS", "").split(",")
-                    if v.strip()
+                    int(configured_value.strip())
+                    for configured_value in os.getenv("ALLOWED_CHAT_IDS", "").split(",")
+                    if configured_value.strip()
                 ),
                 base_url=os.getenv("OPENCLAW_BASE_URL", "http://127.0.0.1:18789").rstrip("/"),
                 gateway_token=os.getenv("OPENCLAW_GATEWAY_TOKEN", "").strip(),
@@ -76,9 +109,10 @@ class Settings:
             )
         except ValueError:
             raise BotError("Проверь числовые значения в .env.") from None
+
         if not all(
-            math.isfinite(v)
-            for v in (
+            math.isfinite(configured_value)
+            for configured_value in (
                 settings.cooldown,
                 settings.probability,
                 settings.timeout,
@@ -86,6 +120,7 @@ class Settings:
             )
         ):
             raise BotError("Числовые настройки должны быть конечными.")
+
         if (
             settings.cooldown < 0
             or not 0 <= settings.probability <= 1
@@ -93,15 +128,19 @@ class Settings:
             or settings.audio_timeout <= 0
         ):
             raise BotError("Неверные интервалы или вероятность в .env.")
-        parsed = urlsplit(settings.base_url)
+
+        gateway_address = urlsplit(settings.base_url)
+
         if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username
-            or parsed.query
-            or parsed.fragment
+            gateway_address.scheme not in {"http", "https"}
+            or not gateway_address.hostname
+            or gateway_address.username
+            or gateway_address.query
+            or gateway_address.fragment
         ):
             raise BotError("OPENCLAW_BASE_URL должен быть HTTP(S)-адресом без токена.")
+
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", settings.agent):
             raise BotError("Неверный OPENCLAW_AGENT_ID.")
+
         return settings

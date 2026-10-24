@@ -8,12 +8,18 @@ from semen_banan.audio.rendering import render_piano
 
 
 class AudioPipeline:
-    """This pipeline runs only inside the disposable worker process."""
+    """Последовательность создания аудио внутри отдельного генератора."""
 
     def generate(self, request: AudioRequest) -> tuple[bytes, int]:
+        """Озвучивает ноты, сводит дорожки и кодирует голосовое.
+
+        :param request: Исходная просьба или задание генерации.
+        :return: Байты OGG/Opus и длительность записи в секундах.
+        """
         kind = ComposerKind.NANOMAESTRO if request.use_nano else ComposerKind.SCORE
         notes = select_composer(kind).compose(request.score, seed=request.seed)
         piano, duration = render_piano(notes, request.score["tempo"])
+
         if request.arrangement is not None:
             drums, speech = backing_tracks(
                 request.score["tempo"],
@@ -21,4 +27,5 @@ class AudioPipeline:
                 request.arrangement,
             )
             piano, duration = mix_tracks(piano, drums, speech)
+
         return encode_voice(piano), duration

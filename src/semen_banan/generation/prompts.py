@@ -1,38 +1,165 @@
 from __future__ import annotations
 
+import tomllib
+from dataclasses import dataclass
+from functools import lru_cache
+from importlib.resources import files
+from pathlib import Path
+from string import Template
 
-def arrange_prompt(beats: int) -> str:
-    return (
-        "Режим аранжировки: выдай ТОЛЬКО JSON с барабанами и речью. "
-        "speech_style и character_requests описывают только стиль текста внутри speech.text; "
-        "не переноси оттуда требования отвечать обычной репликой. "
-        'Формат: {"drums":[{"midi":36,"beat":0,"velocity":70}],'
-        '"speech":[{"beat":0,"text":"С вами Семён. Бананы в студию."}]}. '
-        "drums — повторяющийся рисунок одного такта 4/4, от 1 до 32 ударов, "
-        "beat от 0 до 3.75 с шагом 0.25, velocity 25–105. "
-        "Допустимые MIDI: 35,36 бочка; 38,39 малый и хлопок; 42,44,46 хэты; 49,51 тарелки. "
-        "Сделай негромкий ритм, подходящий к просьбе, без перегруза тарелками. "
-        f"Всего в пьесе {beats} долей. speech — короткие русские фразы Семёна поверх музыки, "
-        f"каждая максимум 80 символов, beat от 0 до {beats - 4}. "
-        + (
-            "Одна фраза максимум 45 символов на beat 0."
-            if beats <= 16
-            else "Две-три фразы максимум 60 символов каждая. Разнеси их на 16–20 долей."
+from semen_banan.errors import BotError
+
+
+@dataclass(frozen=True, slots=True)
+class PromptCatalog:
+    """Единый каталог инструкций модели и шаблонов проверочных запросов."""
+
+    context_notice: str
+    persona: str
+    routing: str
+    composition: str
+    arrangement_template: str
+    short_speech: str
+    long_speech: str
+    gateway_request: str
+    music_request: str
+    comparison_request: str
+    comparison_forms: tuple[str, ...]
+    comparison_section_template: str
+    comparison_arrangement_template: str
+
+    @classmethod
+    def load(cls, path: Path | None = None) -> PromptCatalog:
+        """Читает единый TOML-файл и проверяет обязательные промпты.
+
+        :param path: Путь к файлу настроек или хранилища.
+        :return: Проверенный каталог промптов.
+        """
+        try:
+            prompt_source = (
+                path.read_text(encoding="utf-8")
+                if path is not None
+                else files("semen_banan.resources")
+                .joinpath("prompts.toml")
+                .read_text(encoding="utf-8")
+            )
+            configuration = tomllib.loads(prompt_source)
+
+            def read_text(section: str, name: str) -> str:
+                """Читает обязательную непустую текстовую настройку промпта.
+
+                :param section: Раздел конфигурации промптов.
+                :param name: Имя обязательной текстовой настройки.
+                :return: Строка настройки без изменения её содержания.
+                """
+                configured_prompt = configuration[section][name]
+
+                if not isinstance(configured_prompt, str) or not configured_prompt.strip():
+                    raise ValueError(f"Пустой или неверный промпт: {section}.{name}.")
+
+                return configured_prompt
+
+            section_goals = configuration["comparison"]["forms"]
+
+            if (
+                not isinstance(section_goals, list)
+                or len(section_goals) != 4
+                or any(not isinstance(item, str) or not item.strip() for item in section_goals)
+            ):
+                raise ValueError("Нужно задать четыре этапа музыкального сравнения.")
+
+            prompt_catalog = cls(
+                context_notice=read_text("context", "truncation_notice"),
+                persona=read_text("persona", "system"),
+                routing=read_text("routing", "system"),
+                composition=read_text("composition", "system"),
+                arrangement_template=read_text("arrangement", "system"),
+                short_speech=read_text("arrangement", "short_speech"),
+                long_speech=read_text("arrangement", "long_speech"),
+                gateway_request=read_text("diagnostics", "gateway_request"),
+                music_request=read_text("diagnostics", "music_request"),
+                comparison_request=read_text("comparison", "request"),
+                comparison_forms=tuple(section_goals),
+                comparison_section_template=read_text("comparison", "section"),
+                comparison_arrangement_template=read_text("comparison", "arrangement"),
+            )
+            prompt_catalog.validate_templates()
+
+            return prompt_catalog
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise BotError(
+                "Не удалось загрузить prompts.toml: проверь разделы и шаблоны промптов."
+            ) from error
+
+    def validate_templates(self) -> None:
+        """Проверяет набор подстановок в шаблонах промптов.
+
+        :return: Не возвращает значение.
+        """
+        templates = (
+            (self.arrangement_template, {"total_beats", "last_speech_beat", "speech_guidance"}),
+            (
+                self.comparison_section_template,
+                {"request", "tempo", "first_bar", "last_bar", "total_bars", "section_goal"},
+            ),
+            (self.comparison_arrangement_template, {"request"}),
         )
-        + " Это разговорная речь, не пение. Не имитируй голоса реальных людей. Не вызывай инструменты. "
-        "Длительность запроса не меняет границы: drums описывает один такт, "
-        f"speech.beat не больше {beats - 4}. "
-        "Если передан correction, исправь указанный дефект предыдущего JSON и верни полный JSON."
-    )
+
+        for prompt_source, expected_parameters in templates:
+            template = Template(prompt_source)
+
+            if not template.is_valid() or set(template.get_identifiers()) != expected_parameters:
+                raise ValueError("Неверные подстановки в шаблоне промпта.")
+
+    def arrangement(self, total_beats: int) -> str:
+        """Подставляет длительность и ограничения речи в промпт аранжировки.
+
+        :param total_beats: Общее количество долей пьесы.
+        :return: Системная инструкция для указанной длины пьесы.
+        """
+        return Template(self.arrangement_template).substitute(
+            total_beats=total_beats,
+            last_speech_beat=total_beats - 4,
+            speech_guidance=self.short_speech if total_beats <= 16 else self.long_speech,
+        )
+
+    def comparison_section(
+        self, request: str, tempo: int, section_index: int, total_bars: int
+    ) -> str:
+        """Готовит запрос на очередной фрагмент музыкального сравнения.
+
+        :param request: Исходная просьба или задание генерации.
+        :param tempo: Темп пьесы в ударах в минуту.
+        :param section_index: Номер фрагмента, начиная с нуля.
+        :param total_bars: Общее количество тактов сравниваемой пьесы.
+        :return: Текст запроса с этапом развития пьесы.
+        """
+        section_goal_index = (
+            3 if section_index == total_bars // 4 - 1 and section_index else section_index
+        )
+
+        return Template(self.comparison_section_template).substitute(
+            request=request,
+            tempo=tempo,
+            first_bar=section_index * 4 + 1,
+            last_bar=section_index * 4 + 4,
+            total_bars=total_bars,
+            section_goal=self.comparison_forms[section_goal_index],
+        )
+
+    def comparison_arrangement(self, request: str) -> str:
+        """Готовит запрос дополнительных дорожек для сравнения.
+
+        :param request: Исходная просьба или задание генерации.
+        :return: Текст запроса аранжировки.
+        """
+        return Template(self.comparison_arrangement_template).substitute(request=request)
 
 
-def compose_prompt() -> str:
-    return (
-        "Ты музыкальный композитор Семён. Придумай короткую оригинальную мелодию для простого пианино "
-        "по запросу пользователя. Ответь ТОЛЬКО JSON без пояснений: "
-        '{"tempo":100,"melody":[{"midi":64,"beats":1}],"chords":[[48,52,55],[50,53,57],[48,52,55],[43,47,50]]}. '
-        "Темп целое 70–140. Мелодия: 8–40 нот MIDI 48–84, длительности по четвертям "
-        "0.25–4 с шагом 0.25, суммарно ровно 16 долей (4 такта 4/4). "
-        "chords: ровно 4 трезвучия по 3 ноты MIDI 40–72, по одному на такт. "
-        "Сделай мелодию выразительной, гармоничной, запоминающейся. Не вызывай инструменты."
-    )
+@lru_cache(maxsize=1)
+def load_prompts() -> PromptCatalog:
+    """Загружает единый каталог промптов и кеширует его до перезапуска.
+
+    :return: Проверенный каталог инструкций модели.
+    """
+    return PromptCatalog.load()

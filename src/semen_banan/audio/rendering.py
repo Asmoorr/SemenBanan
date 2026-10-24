@@ -9,55 +9,74 @@ import tempfile
 import wave
 from pathlib import Path
 
+from semen_banan.audio.models import NoteSequence
 from semen_banan.config import AppPaths
 
 
-def render_piano(notes: list[dict], tempo: int, assets: Path | None = None) -> tuple[bytes, int]:
-    """Render offline: no audio device or visible program window is opened."""
+def render_piano(notes: NoteSequence, tempo: int, assets: Path | None = None) -> tuple[bytes, int]:
+    """Озвучивает ноты через FluidSynth без открытия аудиоустройства.
+
+    :param notes: Ноты с позициями, длительностями и силой нажатия.
+    :param tempo: Темп пьесы в ударах в минуту.
+    :param assets: Каталог музыкальных моделей и звуковых банков.
+    :return: WAV-дорожка и её длительность в секундах.
+    """
     import mido
 
     assets = assets or AppPaths.load().assets
-    portable = assets / "fluidsynth/bin/fluidsynth.exe"
-    executable = str(portable) if portable.exists() else shutil.which("fluidsynth")
-    soundfont = assets / "GeneralUser-GS.sf2"
-    if not executable or not soundfont.exists():
+    portable_synthesizer = assets / "fluidsynth/bin/fluidsynth.exe"
+    executable = (
+        str(portable_synthesizer) if portable_synthesizer.exists() else shutil.which("fluidsynth")
+    )
+    soundfont_path = assets / "GeneralUser-GS.sf2"
+
+    if not executable or not soundfont_path.exists():
         raise RuntimeError("Пианино не установлено: запусти python tools/setup_assets.py.")
+
     if not notes or len(notes) > 3000 or not 35 <= tempo <= 240:
         raise RuntimeError("Неверная или слишком большая партитура.")
-    midi = mido.MidiFile(ticks_per_beat=480)
-    track = mido.MidiTrack()
-    midi.tracks.append(track)
-    track.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(tempo)))
+
+    midi_file = mido.MidiFile(ticks_per_beat=480)
+    midi_track = mido.MidiTrack()
+    midi_file.tracks.append(midi_track)
+    midi_track.append(mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(tempo)))
+
     for channel in (0, 1):
-        track.append(mido.Message("program_change", program=0, channel=channel))
+        midi_track.append(mido.Message("program_change", program=0, channel=channel))
+
     events = []
-    rng = random.Random(42)
+    random_generator = random.Random(42)
+
     for note in notes:
-        start, length, pitch = note["start"], note["beats"], note["midi"]
-        if not (0 <= start < 64 and 0 < length <= 16 and 21 <= pitch <= 108):
+        start_beat, duration_beats, midi_pitch = note["start"], note["beats"], note["midi"]
+
+        if not (0 <= start_beat < 64 and 0 < duration_beats <= 16 and 21 <= midi_pitch <= 108):
             raise RuntimeError("Нота выходит за допустимые границы.")
+
         channel = note.get("channel", 0)
-        velocity = max(25, min(105, int(note["velocity"]) + rng.randint(-4, 4)))
-        # At most 8 ms of timing variation; musical positions stay intact.
-        start = max(0.0, start + rng.uniform(-0.008, 0.008) * tempo / 60)
+        velocity = max(25, min(105, int(note["velocity"]) + random_generator.randint(-4, 4)))
+        # Вариация времени до 8 мс сохраняет музыкальные позиции.
+        start_beat = max(0.0, start_beat + random_generator.uniform(-0.008, 0.008) * tempo / 60)
         events.extend(
             [
                 (
-                    round(start * 480),
+                    round(start_beat * 480),
                     3,
-                    mido.Message("note_on", note=pitch, velocity=velocity, channel=channel),
+                    mido.Message("note_on", note=midi_pitch, velocity=velocity, channel=channel),
                 ),
                 (
-                    round((start + length) * 480),
+                    round((start_beat + duration_beats) * 480),
                     0,
-                    mido.Message("note_off", note=pitch, channel=channel),
+                    mido.Message("note_off", note=midi_pitch, channel=channel),
                 ),
             ]
         )
-    end = max(n["start"] + n["beats"] for n in notes)
+
+    last_note_beat = max(note["start"] + note["beats"] for note in notes)
+
     for channel in (0, 1):
-        for bar_start in range(0, math.ceil(end / 4) * 4, 4):
-            # Brief pedal lift at each bar prevents an accumulating blur.
+        for bar_start in range(0, math.ceil(last_note_beat / 4) * 4, 4):
+            # Отпускание педали в каждом такте предотвращает накопление звучания.
             events.append(
                 (
                     bar_start * 480,
@@ -65,22 +84,30 @@ def render_piano(notes: list[dict], tempo: int, assets: Path | None = None) -> t
                     mido.Message("control_change", control=64, value=80, channel=channel),
                 )
             )
-            lift = min(bar_start + 3.92, end + 0.1)
+            pedal_release_beat = min(bar_start + 3.92, last_note_beat + 0.1)
             events.append(
                 (
-                    round(lift * 480),
+                    round(pedal_release_beat * 480),
                     1,
                     mido.Message("control_change", control=64, value=0, channel=channel),
                 )
             )
-    previous = 0
+
+    previous_tick = 0
+
     for tick, _, event in sorted(events, key=lambda event: event[:2]):
-        track.append(event.copy(time=tick - previous))
-        previous = tick
-    track.append(mido.MetaMessage("end_of_track"))
-    with tempfile.TemporaryDirectory(prefix="semyon-piano-") as folder:
-        midi_path, wav_path = Path(folder) / "score.mid", Path(folder) / "piano.wav"
-        midi.save(midi_path)
+        midi_track.append(event.copy(time=tick - previous_tick))
+        previous_tick = tick
+
+    midi_track.append(mido.MetaMessage("end_of_track"))
+
+    with tempfile.TemporaryDirectory(prefix="semyon-piano-") as temporary_directory:
+        midi_path, wav_path = (
+            Path(temporary_directory) / "score.mid",
+            Path(temporary_directory) / "piano.wav",
+        )
+        midi_file.save(midi_path)
+
         try:
             subprocess.run(
                 [
@@ -102,7 +129,7 @@ def render_piano(notes: list[dict], tempo: int, assets: Path | None = None) -> t
                     "synth.reverb.width=60",
                     "-F",
                     str(wav_path),
-                    str(soundfont),
+                    str(soundfont_path),
                     str(midi_path),
                 ],
                 capture_output=True,
@@ -113,6 +140,8 @@ def render_piano(notes: list[dict], tempo: int, assets: Path | None = None) -> t
             audio = wav_path.read_bytes()
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             raise RuntimeError("FluidSynth не смог сыграть партитуру.") from None
-    with wave.open(io.BytesIO(audio)) as wav:
-        duration = math.ceil(wav.getnframes() / wav.getframerate())
+
+    with wave.open(io.BytesIO(audio)) as wave_reader:
+        duration = math.ceil(wave_reader.getnframes() / wave_reader.getframerate())
+
     return audio, duration

@@ -6,83 +6,122 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 
-from semen_banan.audio.models import ComposerKind, Score
+from semen_banan.audio.models import ComposerKind, NoteSequence, Score
 from semen_banan.config import AppPaths
 
 
-def score_notes(score: Score) -> list[dict]:
-    notes = []
-    offset = 0.0
+def score_notes(score: Score) -> NoteSequence:
+    """Преобразует мелодию и аккорды в ноты для озвучивания.
+
+    :param score: Партитура с темпом, мелодией и аккордами.
+    :return: Ноты с позицией, длительностью, силой и каналом.
+    """
+    notes: NoteSequence = []
+    melody_offset = 0.0
+
     for index, note in enumerate(score["melody"]):
         notes.append(
             dict(
-                start=offset,
+                start=melody_offset,
                 beats=note["beats"] * 0.9,
                 midi=note["midi"],
                 velocity=82 + (index % 3 - 1) * 5,
                 channel=0,
             )
         )
-        offset += note["beats"]
-    for bar, chord in enumerate(score["chords"]):
+        melody_offset += note["beats"]
+
+    for bar_index, chord in enumerate(score["chords"]):
         for beat in (0, 2):
             for pitch in chord:
                 notes.append(
-                    dict(start=bar * 4 + beat, beats=1.7, midi=pitch, velocity=48, channel=1)
+                    dict(start=bar_index * 4 + beat, beats=1.7, midi=pitch, velocity=48, channel=1)
                 )
+
     return notes
 
 
 class IncompleteCompositionError(RuntimeError):
-    """The model finished without enough notes or bars."""
+    """Ошибка слишком короткого результата локальной модели."""
 
 
 class NanoMaestro:
+    """Локальный композитор с ограничением длины и времени генерации."""
+
     def __init__(self, assets: Path | None = None) -> None:
+        """Загружает словарь и сессию локальной модели NanoMaestro.
+
+        :param assets: Каталог музыкальных моделей и звуковых банков.
+        :return: Не возвращает значение.
+        """
         import numpy as np
         import onnxruntime as ort
 
         assets = assets or AppPaths.load().assets
-        self.np = np
-        vocab = json.loads((assets / "nanomaestro/vocab.json").read_text(encoding="utf-8"))
-        self.stoi = vocab["stoi"]
-        self.itos = {int(k): v for k, v in vocab["itos"].items()}
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = 2
-        options.inter_op_num_threads = 1
-        self.session = ort.InferenceSession(
+        self.numpy_module = np
+        vocabulary = json.loads((assets / "nanomaestro/vocab.json").read_text(encoding="utf-8"))
+        self.token_indices = vocabulary["stoi"]
+        self.tokens_by_index = {
+            int(token_index): token_name for token_index, token_name in vocabulary["itos"].items()
+        }
+        session_options = ort.SessionOptions()
+        session_options.intra_op_num_threads = 2
+        session_options.inter_op_num_threads = 1
+        self.inference_session = ort.InferenceSession(
             str(assets / "nanomaestro/model.onnx"),
-            sess_options=options,
+            sess_options=session_options,
             providers=["CPUExecutionProvider"],
         )
 
-    def compose(self, score: Score, seed: int | None = None, bars: int = 4) -> list[dict]:
-        """Continue the primer; allow one retry within a shared time budget."""
+    def compose(self, score: Score, seed: int | None = None, bars: int = 4) -> NoteSequence:
+        """Получает ноты для заданной партитуры.
+
+        :param score: Партитура с темпом, мелодией и аккордами.
+        :param seed: Начальное значение генератора случайных чисел.
+        :param bars: Количество тактов пьесы.
+        :return: Последовательность нот для озвучивания.
+        """
         if type(bars) is not int or not 4 <= bars <= 16:
             raise RuntimeError("Длина пьесы должна быть от 4 до 16 тактов.")
+
         deadline = time.monotonic() + 20
+
         for attempt in range(2):
             if time.monotonic() >= deadline:
                 raise RuntimeError("NanoMaestro не закончила пьесу за 20 секунд.")
+
             attempt_seed = (seed + attempt) % (2**32) if seed is not None else None
+
             try:
                 return self._compose(score, attempt_seed, bars, deadline)
             except IncompleteCompositionError:
                 if attempt:
                     raise
-        raise AssertionError("Unreachable local composition retry state")
 
-    def _compose(self, score: Score, seed: int | None, bars: int, deadline: float) -> list[dict]:
-        np = self.np
-        rng = np.random.default_rng(seed)
+        raise AssertionError("Недостижимое состояние повторной локальной генерации.")
+
+    def _compose(self, score: Score, seed: int | None, bars: int, deadline: float) -> NoteSequence:
+        """Создаёт музыкальное продолжение заданной партитуры.
+
+        :param score: Партитура с темпом, мелодией и аккордами.
+        :param seed: Начальное значение генератора случайных чисел.
+        :param bars: Количество тактов пьесы.
+        :param deadline: Предельная монотонная временная метка генерации.
+        :return: Результат сочинения с проверенными ограничениями.
+        """
+        np = self.numpy_module
+        random_generator = np.random.default_rng(seed)
         prompt = ["BOS", f"BPM_{score['tempo']}", "GRID_64", "BAR"]
-        primer = [n for n in score_notes(score) if n["start"] < 4]
-        position = None
-        for note in sorted(primer, key=lambda n: (n["start"], n["midi"])):
-            pos = round(note["start"] * 16)
-            if pos != position:
-                prompt.append(f"POS_{pos}")
-                position = pos
+        primer_notes = [note for note in score_notes(score) if note["start"] < 4]
+        previous_grid_position = None
+
+        for note in sorted(primer_notes, key=lambda note: (note["start"], note["midi"])):
+            grid_position = round(note["start"] * 16)
+
+            if grid_position != previous_grid_position:
+                prompt.append(f"POS_{grid_position}")
+                previous_grid_position = grid_position
+
             prompt.extend(
                 [
                     f"NOTE_{note['midi']}",
@@ -90,58 +129,89 @@ class NanoMaestro:
                     f"VEL_{min(8, max(1, round(note['velocity'] / 16)))}",
                 ]
             )
-        prompt.extend(["BAR", "POS_0"])
-        h = np.zeros((2, 1, 1024), dtype=np.float32)
-        c = np.zeros_like(h)
-        logits = None
 
-        def step(token: str):
-            nonlocal h, c, logits
+        prompt.extend(["BAR", "POS_0"])
+        hidden_state = np.zeros((2, 1, 1024), dtype=np.float32)
+        cell_state = np.zeros_like(hidden_state)
+        token_logits = None
+
+        def step(token: str) -> None:
+            """Выполняет один шаг модели и обновляет её внутреннее состояние.
+
+            :param token: Токен модели или Telegram API.
+            :return: Не возвращает значение.
+            """
+            nonlocal hidden_state, cell_state, token_logits
+
             if time.monotonic() >= deadline:
                 raise RuntimeError("NanoMaestro не закончила пьесу за 20 секунд.")
-            logits, h, c = self.session.run(
-                None, {"input": np.array([[self.stoi[token]]], dtype=np.int64), "h": h, "c": c}
+
+            token_logits, hidden_state, cell_state = self.inference_session.run(
+                None,
+                {
+                    "input": np.array([[self.token_indices[token]]], dtype=np.int64),
+                    "h": hidden_state,
+                    "c": cell_state,
+                },
             )
 
         for token in prompt:
             step(token)
-        notes = list(primer)
-        bar, pos, chord_size = 1, 0, 0
+
+        notes = list(primer_notes)
+        bar_index, grid_position, chord_size = 1, 0, 0
         pending_pitch, pending_duration = None, None
-        previous = "POS_0"
+        previous_token = "POS_0"
+
         for _ in range(bars * 400):
             if time.monotonic() > deadline:
                 raise RuntimeError("NanoMaestro не закончила пьесу за 20 секунд.")
-            if previous.startswith("NOTE_"):
-                allowed = [i for t, i in self.stoi.items() if t.startswith("DUR_")]
-            elif previous.startswith("DUR_"):
-                allowed = [i for t, i in self.stoi.items() if t.startswith("VEL_")]
+
+            if previous_token.startswith("NOTE_"):
+                allowed = [
+                    token_index
+                    for token_name, token_index in self.token_indices.items()
+                    if token_name.startswith("DUR_")
+                ]
+            elif previous_token.startswith("DUR_"):
+                allowed = [
+                    token_index
+                    for token_name, token_index in self.token_indices.items()
+                    if token_name.startswith("VEL_")
+                ]
             else:
                 allowed = [
-                    i
-                    for t, i in self.stoi.items()
-                    if (t.startswith("NOTE_") and chord_size < 8)
-                    or t == "BAR"
-                    or (t.startswith("POS_") and int(t[4:]) > pos)
+                    token_index
+                    for token_name, token_index in self.token_indices.items()
+                    if (token_name.startswith("NOTE_") and chord_size < 8)
+                    or token_name == "BAR"
+                    or (token_name.startswith("POS_") and int(token_name[4:]) > grid_position)
                 ]
-            values = np.asarray(logits).reshape(-1)[allowed].astype(np.float64) / 0.85
-            top = np.argsort(values)[-min(24, len(values)) :]
-            weights = np.exp(values[top] - values[top].max())
-            selected = int(rng.choice(top, p=weights / weights.sum()))
-            token = self.itos[allowed[selected]]
+
+            values = np.asarray(token_logits).reshape(-1)[allowed].astype(np.float64) / 0.85
+            candidate_indices = np.argsort(values)[-min(24, len(values)) :]
+            sampling_weights = np.exp(values[candidate_indices] - values[candidate_indices].max())
+            selected_index = int(
+                random_generator.choice(
+                    candidate_indices, p=sampling_weights / sampling_weights.sum()
+                )
+            )
+            token = self.tokens_by_index[allowed[selected_index]]
+
             if token == "BAR":
-                bar += 1
-                pos, chord_size = 0, 0
-                if bar >= bars:
+                bar_index += 1
+                grid_position, chord_size = 0, 0
+
+                if bar_index >= bars:
                     break
             elif token.startswith("POS_"):
-                pos, chord_size = int(token[4:]), 0
+                grid_position, chord_size = int(token[4:]), 0
             elif token.startswith("NOTE_"):
                 pending_pitch = int(token[5:])
             elif token.startswith("DUR_"):
                 pending_duration = min(4.0, int(token[4:]) / 16)
             elif token.startswith("VEL_") and pending_pitch is not None and pending_duration:
-                start = bar * 4 + pos / 16
+                start = bar_index * 4 + grid_position / 16
                 notes.append(
                     dict(
                         start=start,
@@ -152,19 +222,26 @@ class NanoMaestro:
                 )
                 pending_pitch, pending_duration = None, None
                 chord_size += 1
+
             step(token)
-            previous = token
+            previous_token = token
+
         if (
-            bar < bars
-            or len(notes) < len(primer) + 8
-            or max(n["start"] for n in notes) < (bars - 1) * 4
+            bar_index < bars
+            or len(notes) < len(primer_notes) + 8
+            or max(note["start"] for note in notes) < (bars - 1) * 4
         ):
             raise IncompleteCompositionError("NanoMaestro вернула слишком короткую пьесу.")
+
         return notes
 
 
 @lru_cache(maxsize=1)
 def local_composer() -> NanoMaestro:
+    """Загружает и кеширует локальный композитор в текущем процессе.
+
+    :return: Готовый композитор NanoMaestro.
+    """
     try:
         return NanoMaestro()
     except (ImportError, OSError, ValueError, RuntimeError) as exc:
@@ -174,15 +251,38 @@ def local_composer() -> NanoMaestro:
 
 
 class Composer(Protocol):
-    def compose(self, score: Score, seed: int | None = None) -> list[dict]: ...
+    """Контракт получения нот из исходной партитуры."""
+
+    def compose(self, score: Score, seed: int | None = None) -> NoteSequence:
+        """Получает ноты для заданной партитуры.
+
+        :param score: Партитура с темпом, мелодией и аккордами.
+        :param seed: Начальное значение генератора случайных чисел.
+        :return: Последовательность нот для озвучивания.
+        """
+        ...
 
 
 class ScoreComposer:
-    def compose(self, score: Score, seed: int | None = None) -> list[dict]:
+    """Композитор, использующий готовую партитуру без локальной модели."""
+
+    def compose(self, score: Score, seed: int | None = None) -> NoteSequence:
+        """Получает ноты для заданной партитуры.
+
+        :param score: Партитура с темпом, мелодией и аккордами.
+        :param seed: Начальное значение генератора случайных чисел.
+        :return: Последовательность нот для озвучивания.
+        """
         return score_notes(score)
 
 
 def select_composer(kind: ComposerKind) -> Composer:
+    """Выбирает способ получения нот по типу композитора.
+
+    :param kind: Тип композитора или отложенного задания.
+    :return: Объект выбранного композитора.
+    """
     if kind == ComposerKind.NANOMAESTRO:
         return local_composer()
+
     return ScoreComposer()

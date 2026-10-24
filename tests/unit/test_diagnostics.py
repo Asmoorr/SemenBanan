@@ -13,10 +13,17 @@ from semen_banan.audio.models import AudioResult
 from semen_banan.bootstrap import run
 from semen_banan.config import AppPaths, Settings
 from semen_banan.errors import BotError
+from tests.fixtures import route_json
 
 
 class Diagnostics(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
+    """Проверки диагностических режимов запуска."""
+
+    async def asyncSetUp(self) -> None:
+        """Подготавливает временные ресурсы и зависимости теста.
+
+        :return: Не возвращает значение.
+        """
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.home = Path(self.directory.name)
@@ -37,6 +44,7 @@ class Diagnostics(unittest.IsolatedAsyncioTestCase):
         self.gateway = self.stack.enter_context(
             patch("semen_banan.bootstrap.OpenClawClient", return_value=AsyncMock())
         ).return_value
+        self.gateway.classify.return_value = route_json("music")
         self.gateway.compose.return_value = json.dumps(
             {
                 "tempo": 100,
@@ -55,7 +63,11 @@ class Diagnostics(unittest.IsolatedAsyncioTestCase):
         )
         self.stack.enter_context(patch("sys.stdout", new=io.StringIO()))
 
-    async def test_music_check_generates_full_mix_without_telegram_or_state(self):
+    async def test_music_check_generates_full_mix_without_telegram_or_state(self) -> None:
+        """Проверяет создание микса без Telegram и изменения состояния.
+
+        :return: Не возвращает значение.
+        """
         await run("check-music")
         self.assertEqual((self.home / ".runtime/checks/music.ogg").read_bytes(), b"OggSpreview")
         score, use_nano, arrangement = self.audio.await_args.args
@@ -67,7 +79,19 @@ class Diagnostics(unittest.IsolatedAsyncioTestCase):
         self.storage.assert_not_called()
         self.assertFalse((self.home / "state.json").exists())
 
-    async def test_music_check_can_select_nano_and_custom_output(self):
+    async def test_music_check_can_select_nano_and_custom_output(self) -> None:
+        """Проверяет NanoMaestro и путь результата музыкальной диагностики.
+
+        :return: Не возвращает значение.
+        """
+        self.gateway.classify.return_value = route_json(
+            "music",
+            parameters={
+                "composer": "nanomaestro",
+                "drums": True,
+                "speech": False,
+            },
+        )
         destination = self.home / "preview/nano.ogg"
         await run("check-music", destination, "Сыграй через NanoMaestro без речи")
         self.assertTrue(destination.exists())
@@ -75,24 +99,40 @@ class Diagnostics(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.audio.await_args.args[2]["speech"], [])
         self.telegram.assert_not_called()
 
-    async def test_failed_music_check_does_not_write_preview(self):
-        self.audio.side_effect = AudioError("Timeout")
+    async def test_failed_music_check_does_not_write_preview(self) -> None:
+        """Проверяет отсутствие нового файла при ошибке диагностики.
+
+        :return: Не возвращает значение.
+        """
+        self.audio.side_effect = AudioError("Истекло время ожидания")
+
         with self.assertRaises(BotError):
             await run("check-music")
+
         self.assertFalse((self.home / ".runtime/checks/music.ogg").exists())
         self.telegram.assert_not_called()
 
-    async def test_gateway_check_does_not_render_music_or_open_telegram(self):
+    async def test_gateway_check_does_not_render_music_or_open_telegram(self) -> None:
+        """Проверяет независимость диагностики Gateway от Telegram и аудио.
+
+        :return: Не возвращает значение.
+        """
         self.gateway.reply.return_value = "Банан"
         await run("check-gateway")
         self.gateway.reply.assert_awaited_once()
         self.audio.assert_not_awaited()
         self.telegram.assert_not_called()
 
-    async def test_invalid_notes_stop_before_worker_after_two_attempts(self):
+    async def test_invalid_notes_stop_before_worker_after_two_attempts(self) -> None:
+        """Проверяет остановку до запуска worker при неверных нотах.
+
+        :return: Не возвращает значение.
+        """
         self.gateway.compose.return_value = "not a score"
+
         with self.assertRaises(BotError):
             await run("check-music")
+
         self.assertEqual(self.gateway.compose.await_count, 2)
         self.gateway.arrange.assert_not_awaited()
         self.audio.assert_not_awaited()

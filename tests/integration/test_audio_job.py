@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import importlib.util
 import json
@@ -6,18 +8,31 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from semen_banan.audio.jobs import AudioError, AudioJobRunner
+from semen_banan.audio.models import AudioResult
 from semen_banan.config import AppPaths
 
 ROOT = AppPaths.load().home
 
 
-async def render_audio(*args, **kwargs):
+async def render_audio(*args: Any, **kwargs: Any) -> AudioResult:
+    """Запускает тестовое аудиозадание с фиксированным seed.
+
+    :param args: Дополнительные позиционные параметры вызова.
+    :param kwargs: Дополнительные именованные параметры вызова.
+    :return: Результат генерации отдельным процессом.
+    """
     return await AudioJobRunner(AppPaths.load(), seed=42).render(*args, **kwargs)
 
 
 def process_is_alive(pid: int) -> bool:
+    """Проверяет, продолжает ли работать процесс.
+
+    :param pid: Идентификатор проверяемого процесса.
+    :return: Признак работающего процесса.
+    """
     if os.name == "nt":
         import ctypes
         from ctypes import wintypes
@@ -28,22 +43,34 @@ def process_is_alive(pid: int) -> bool:
         kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         handle = kernel.OpenProcess(0x1000, False, pid)
+
         if not handle:
             return False
+
         try:
             code = wintypes.DWORD()
+
             return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
         finally:
             kernel.CloseHandle(handle)
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+
     return True
 
 
 class AudioJob(unittest.IsolatedAsyncioTestCase):
+    """Проверки изолированных аудиопроцессов."""
+
     def sleeping_worker(self, directory: Path) -> tuple[Path, Path]:
+        """Создаёт временный генератор с дочерним процессом для отмены.
+
+        :param directory: Каталог временного скрипта и файла PID.
+        :return: Пути к скрипту генератора и файлу PID.
+        """
         marker, worker = directory / "pids.json", directory / "sleep_worker.py"
         worker.write_text(
             "import json,os,subprocess,sys,time\nfrom pathlib import Path\n"
@@ -52,37 +79,58 @@ class AudioJob(unittest.IsolatedAsyncioTestCase):
             "time.sleep(60)\n",
             encoding="utf-8",
         )
+
         return worker, marker
 
-    async def test_timeout_stops_worker_and_its_child(self):
+    async def test_timeout_stops_worker_and_its_child(self) -> None:
+        """Проверяет остановку дерева генератора по таймауту.
+
+        :return: Не возвращает значение.
+        """
         with tempfile.TemporaryDirectory() as directory:
             worker, marker = self.sleeping_worker(Path(directory))
             runner = AudioJobRunner(AppPaths.load(), (sys.executable, str(worker)))
+
             with self.assertRaisesRegex(AudioError, "вовремя"):
                 await runner.render({}, timeout=1)
+
             self.assertTrue(marker.exists())
+
             for pid in json.loads(marker.read_text()):
                 self.assertFalse(process_is_alive(pid), f"Process {pid} survived timeout")
 
-    async def test_cancel_stops_worker_and_its_child(self):
+    async def test_cancel_stops_worker_and_its_child(self) -> None:
+        """Проверяет остановку дерева генератора при отмене.
+
+        :return: Не возвращает значение.
+        """
         with tempfile.TemporaryDirectory() as directory:
             worker, marker = self.sleeping_worker(Path(directory))
             runner = AudioJobRunner(AppPaths.load(), (sys.executable, str(worker)))
             task = asyncio.create_task(runner.render({}, timeout=60))
+
             try:
                 for _ in range(250):
                     if marker.exists():
                         break
+
                     await asyncio.sleep(0.02)
+
                 self.assertTrue(marker.exists())
             finally:
                 task.cancel()
+
                 with self.assertRaises(asyncio.CancelledError):
                     await task
+
             for pid in json.loads(marker.read_text()):
                 self.assertFalse(process_is_alive(pid), f"Process {pid} survived cancellation")
 
-    async def test_bot_import_does_not_load_model_runtimes(self):
+    async def test_bot_import_does_not_load_model_runtimes(self) -> None:
+        """Проверяет отсутствие тяжёлых библиотек при импорте бота.
+
+        :return: Не возвращает значение.
+        """
         result = await asyncio.create_subprocess_exec(
             sys.executable,
             "-X",
@@ -101,7 +149,11 @@ class AudioJob(unittest.IsolatedAsyncioTestCase):
         (ROOT / "assets/speech/denis.onnx").exists() and importlib.util.find_spec("piper"),
         "Install music assets for worker integration test",
     )
-    async def test_real_job_returns_audio_after_model_process_exits(self):
+    async def test_real_job_returns_audio_after_model_process_exits(self) -> None:
+        """Проверяет получение аудио после завершения генератора.
+
+        :return: Не возвращает значение.
+        """
         score = {
             "tempo": 100,
             "melody": [

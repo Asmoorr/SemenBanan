@@ -1,6 +1,6 @@
 # SemenBanan 🍌
 
-Telegram-бот Семён: отвечает в разрешённых группах через OpenClaw Gateway и создаёт музыкальные голосовые сообщения. История, настройки характера и очередь ответов сохраняются локально.
+Telegram-бот Семён: отвечает в разрешённых группах через OpenClaw Gateway и создаёт музыкальные голосовые сообщения. История, настройки характера и очередь ответов сохраняются локально. Режим ответа и параметры музыки определяет LLM через OpenClaw по сообщению и контексту чата.
 
 ## Быстрый запуск
 
@@ -31,7 +31,7 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1 --check-gateway
 powershell -ExecutionPolicy Bypass -File .\start.ps1 --check-music
 ```
 
-`--check` проверяет Telegram и ответ модели; `--check-gateway` — только модель. `--check-music` запрашивает ноты и аранжировку, запускает отдельный генератор, сводит дорожки и сохраняет OGG в `.runtime/checks/music.ogg`. Сообщения в Telegram не отправляются. Запросы к модели реальные.
+`--check` проверяет Telegram и ответ модели; `--check-gateway` — только модель. `--check-music` определяет режим и параметры через LLM, запрашивает ноты и аранжировку, запускает отдельный генератор, сводит дорожки и сохраняет OGG в `.runtime/checks/music.ogg`. Сообщения в Telegram не отправляются. Запросы к модели реальные.
 
 Для проверки NanoMaestro или другого состава дорожек:
 
@@ -47,6 +47,7 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1 --check-music
 - `tests/unit/`, `tests/integration/` — быстрые и интеграционные проверки.
 - `tools/` — установка ресурсов и инструменты сравнения музыки.
 - `pyproject.toml` — зависимости, Python 3.13 и настройки инструментов.
+- [`src/semen_banan/resources/prompts.toml`](src/semen_banan/resources/prompts.toml) — все промпты, характер персонажа и проверочные запросы.
 - `assets/` — локальные модели; `.runtime/` — журналы и результаты диагностики.
 
 Рабочие `.env`, `memory.sqlite3` и `state.json` остаются в корне. Не публикуй секреты и переписку. Не удаляй файлы SQLite при работающем боте.
@@ -62,4 +63,4 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1 --check-music
 
 Интеграционные проверки требуют музыкальных ресурсов. Быстрый прогон: `python -m unittest discover -s tests/unit -v`.
 
-[Подробная инструкция](docs/usage.md) · [Архитектура](docs/architecture.md) · [Лицензии компонентов](THIRD_PARTY.md)
+[Подробная инструкция](docs/usage.md) · [Архитектура](docs/architecture.md) · [Стиль кода](docs/code-style.md) · [Лицензии компонентов](THIRD_PARTY.md)

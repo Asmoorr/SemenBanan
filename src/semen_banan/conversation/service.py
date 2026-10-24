@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import random
 import time
@@ -7,135 +8,267 @@ from typing import Any
 
 from semen_banan.config import Settings
 from semen_banan.conversation.context import ContextBuilder
-from semen_banan.conversation.policies import STYLE_CHANGE, music_requested, trigger
+from semen_banan.conversation.models import (
+    BotIdentity,
+    ContextMessage,
+    RoutingMetadata,
+    TelegramMessage,
+)
 from semen_banan.conversation.ports import ConversationStore, Cooldowns, Gateway, Telegram
+from semen_banan.conversation.routing import MessageRouter, ReplyMode, ReplyTrigger, RouteDecision
 from semen_banan.errors import BotError
 from semen_banan.generation.service import MusicGenerator
 
-LOG = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 class ConversationService:
+    """Обработка диалога с учётом доступа, очереди и интервалов."""
+
     def __init__(
         self,
         settings: Settings,
         telegram: Telegram,
         gateway: Gateway,
-        me: dict[str, Any],
+        bot_identity: BotIdentity,
         memory: ConversationStore,
         cooldown: Cooldowns,
         music: MusicGenerator,
     ) -> None:
+        """Инициализирует компонент и сохраняет его зависимости.
+
+        :param settings: Проверенные настройки приложения.
+        :param telegram: Клиент Telegram для получения и отправки сообщений.
+        :param gateway: Клиент OpenClaw для работы с языковой моделью.
+        :param bot_identity: Идентификатор и имя Telegram-бота.
+        :param memory: Хранилище истории, характера и очереди.
+        :param cooldown: Хранилище интервалов между ответами.
+        :param music: Сервис создания музыкального ответа.
+        :return: Не возвращает значение.
+        """
         self.settings = settings
         self.telegram = telegram
         self.gateway = gateway
-        self.me = me
+        self.bot_identity = bot_identity
         self.memory = memory
         self.cooldown = cooldown
         self.music = music
-        self.context = ContextBuilder(memory)
+        self.context_builder = ContextBuilder(memory)
+        self.router = MessageRouter(gateway)
         self.last = cooldown.load()
 
     def save(self) -> None:
+        """Сохраняет интервалы между ответами в рабочем файле.
+
+        :return: Не возвращает значение.
+        """
         self.cooldown.save(self.last)
 
-    async def handle(self, message: dict[str, Any]) -> None:
-        chat = message.get("chat", {})
-        chat_id = chat.get("id")
-        sender = message.get("from", {})
-        LOG.info(
-            "Получено: chat_id=%s, type=%s, text=%s, sender_bot=%s",
-            chat_id,
-            chat.get("type"),
-            bool(message.get("text") or message.get("caption")),
-            sender.get("is_bot"),
-        )
-        if chat_id not in self.settings.chats or chat.get("type") not in {"group", "supergroup"}:
-            LOG.info("Пропуск: группа не разрешена")
-            return
-        if sender.get("is_bot") or message.get("sender_chat"):
-            LOG.info("Пропуск: сообщение от бота или анонимного администратора")
-            return
-        text = message.get("text") or message.get("caption")
-        if not text or time.time() - message.get("date", 0) > 120:
-            LOG.info("Пропуск: нет текста или сообщение старше двух минут")
-            return
-        replied_to = message.get("reply_to_message") or {}
-        parent_id = replied_to.get("message_id")
-        base_kind = trigger(message, self.me["username"], self.me["id"])
-        style_change = bool(STYLE_CHANGE.search(text))
-        music_change = music_requested(text)
-        in_chain = self.memory.record_incoming(
-            message, self.me["id"], base_kind == "direct" or style_change
-        )
-        if style_change:
-            self.memory.add_style_request(chat_id, text)
-            LOG.info("Изменение характера сохранено: chat_id=%s", chat_id)
-        kind = (
-            "music"
-            if music_change
-            else "direct"
-            if base_kind == "direct"
-            else "chain"
-            if parent_id is not None and in_chain
-            else "style"
-            if style_change
-            else base_kind
-        )
-        if not kind:
-            LOG.info("Пропуск: нет обращения, цепочки или банана")
-            return
-        if kind == "banana" and random.random() >= self.settings.probability:
-            LOG.info("Пропуск: вероятность 25%%")
-            return
-        await self.respond(message, kind)
+    def eligible(self, message: TelegramMessage, max_age: float = 120) -> bool:
+        """Проверяет локальные ограничения обработки сообщения.
 
-    async def respond(self, message: dict[str, Any], kind: str) -> None:
+        :param message: Исходное сообщение Telegram.
+        :param max_age: Допустимый возраст сообщения в секундах.
+        :return: Признак допустимости обработки сообщения.
+        """
+        chat_data = message.get("chat", {})
+        sender_data = message.get("from", {})
+
+        return bool(
+            chat_data.get("id") in self.settings.chats
+            and chat_data.get("type") in {"group", "supergroup"}
+            and not sender_data.get("is_bot")
+            and not message.get("sender_chat")
+            and (message.get("text") or message.get("caption"))
+            and time.time() - message.get("date", 0) <= max_age
+        )
+
+    def current_message(self, message: TelegramMessage) -> ContextMessage:
+        """Готовит текст и цитату текущего сообщения для модели.
+
+        :param message: Исходное сообщение Telegram.
+        :return: Сообщение в формате контекста LLM.
+        """
+        sender_data = message.get("from") or {}
+        current_message: ContextMessage = {
+            "name": sender_data.get("first_name", "Участник")[:80],
+            "text": (message.get("text") or message.get("caption") or "")[:2000],
+        }
+        replied_message = message.get("reply_to_message") or {}
+
+        if replied_message.get("from", {}).get("id") == self.bot_identity["id"]:
+            quoted = replied_message.get("text") or replied_message.get("caption")
+
+            if quoted:
+                current_message["in_reply_to_semyon"] = quoted[:1200]
+
+        return current_message
+
+    async def handle(self, message: TelegramMessage) -> None:
+        """Проверяет входящее сообщение и запускает маршрутизацию.
+
+        :param message: Исходное сообщение Telegram.
+        :return: Не возвращает значение.
+        """
+        if not self.eligible(message):
+            return
+
+        await self.classify_and_respond(message)
+
+    async def classify_and_respond(self, message: TelegramMessage) -> None:
+        """Определяет намерение, сохраняет параметры и инициирует ответ.
+
+        :param message: Исходное сообщение Telegram.
+        :return: Не возвращает значение.
+        """
         chat_id = message["chat"]["id"]
-        topic = message.get("message_thread_id") or 0
-        key = str(chat_id)
+        topic_id = message.get("message_thread_id") or 0
+        replied_message = message.get("reply_to_message") or {}
+        in_chain = self.memory.record_incoming(message, self.bot_identity["id"], False)
+        conversation_context = self.context_builder.build(
+            chat_id,
+            topic_id,
+            replied_message.get("message_id"),
+            message["message_id"],
+            max_chars=8000,
+        )
+        entities = message.get("entities") or message.get("caption_entities") or []
+        metadata: RoutingMetadata = {
+            "bot": {
+                "id": self.bot_identity["id"],
+                "username": self.bot_identity["username"],
+                "name": "Семён",
+            },
+            "in_chain": in_chain,
+            "reply_to_bot": replied_message.get("from", {}).get("id") == self.bot_identity["id"],
+            "mentions_bot": any(
+                entity.get("type") == "text_mention"
+                and entity.get("user", {}).get("id") == self.bot_identity["id"]
+                for entity in entities
+            ),
+        }
+
+        try:
+            decision = await self.router.route(
+                conversation_context,
+                self.current_message(message),
+                metadata,
+                self.memory.style_requests(chat_id),
+            )
+        except BotError as exc:
+            LOGGER.warning("Не удалось определить режим: %s", exc)
+            self.memory.queue_reply(message, "classify", time.time() + 30)
+
+            return
+
+        LOGGER.info(
+            "Режим определён: chat_id=%s, message_id=%s, mode=%s, trigger=%s",
+            chat_id,
+            message["message_id"],
+            decision.mode,
+            decision.trigger,
+        )
+
+        if decision.mode == ReplyMode.IGNORE:
+            self.memory.forget_reply(chat_id, message["message_id"])
+
+            return
+
+        if decision.trigger == ReplyTrigger.BANANA:
+            if random.random() >= self.settings.probability:
+                self.memory.forget_reply(chat_id, message["message_id"])
+
+                return
+        else:
+            self.memory.record_incoming(message, self.bot_identity["id"], True)
+
+        if decision.style_request is not None:
+            self.memory.add_style_request(chat_id, decision.style_request)
+
+        routed_message = {**message, "_routing": decision.to_payload()}
+        reply_kind = "banana" if decision.trigger == ReplyTrigger.BANANA else decision.mode.value
+        await self.respond(routed_message, reply_kind)
+
+    async def respond(self, message: TelegramMessage, reply_kind: str) -> None:
+        """Выполняет сохранённое решение или откладывает ответ.
+
+        :param message: Исходное сообщение Telegram.
+        :param reply_kind: Тип отложенного ответа.
+        :return: Не возвращает значение.
+        """
+        if "_routing" not in message:
+            # Задания прежней версии классифицируются при ближайшей попытке.
+            await self.classify_and_respond(message)
+
+            return
+
+        try:
+            decision = RouteDecision.parse(json.dumps(message["_routing"]))
+        except ValueError:
+            retry_message = {
+                chat_key: value for chat_key, value in message.items() if chat_key != "_routing"
+            }
+            self.memory.queue_reply(retry_message, "classify", time.time() + 30)
+
+            return
+
+        if decision.mode == ReplyMode.IGNORE:
+            self.memory.forget_reply(message["chat"]["id"], message["message_id"])
+
+            return
+
+        reply_kind = "banana" if decision.trigger == ReplyTrigger.BANANA else decision.mode.value
+        chat_id = message["chat"]["id"]
+        topic_id = message.get("message_thread_id") or 0
+        chat_key = str(chat_id)
         now = time.time()
-        if now - self.last.get(key, 0) < self.settings.cooldown:
-            if kind != "banana":
-                self.memory.queue_reply(message, kind, self.last[key] + self.settings.cooldown)
-                LOG.info(
+
+        if now - self.last.get(chat_key, 0) < self.settings.cooldown:
+            if reply_kind != "banana":
+                self.memory.queue_reply(
+                    message, reply_kind, self.last[chat_key] + self.settings.cooldown
+                )
+                LOGGER.info(
                     "Ответ поставлен в очередь: chat_id=%s, message_id=%s, trigger=%s",
                     chat_id,
                     message["message_id"],
-                    kind,
+                    reply_kind,
                 )
             else:
-                LOG.info("Пропуск: интервал 10 секунд, trigger=banana")
+                LOGGER.info("Пропуск: интервал 10 секунд, trigger=banana")
+
             return
-        # Reserve before network I/O; failures stay silent and cannot cause a request storm.
-        self.last[key] = now
+
+        # Резервируем интервал до сетевого запроса, включая неудачные попытки.
+        self.last[chat_key] = now
         self.save()
+
         try:
-            sender = message.get("from") or {}
-            text = message.get("text") or message.get("caption") or ""
-            current = {"name": sender.get("first_name", "Участник")[:80], "text": text[:2000]}
-            replied_to = message.get("reply_to_message") or {}
-            parent_id = replied_to.get("message_id")
-            if replied_to.get("from", {}).get("id") == self.me["id"]:
-                quoted = replied_to.get("text") or replied_to.get("caption")
-                if quoted:
-                    current["in_reply_to_semyon"] = quoted[:1200]
-            context = self.context.build(chat_id, topic, parent_id, message["message_id"])
-            if kind == "music":
+            current_message = self.current_message(message)
+            parent_message_id = (message.get("reply_to_message") or {}).get("message_id")
+            conversation_context = self.context_builder.build(
+                chat_id, topic_id, parent_message_id, message["message_id"]
+            )
+
+            if decision.mode == ReplyMode.MUSIC:
+                assert decision.music is not None
                 reply = await self.music.generate(
-                    context, current, self.memory.style_requests(chat_id)
+                    conversation_context,
+                    current_message,
+                    self.memory.style_requests(chat_id),
+                    options=decision.music,
                 )
                 sent = await self.telegram.send_voice(
                     chat_id,
                     message["message_id"],
                     reply.audio.voice,
                     reply.audio.duration,
-                    topic,
+                    topic_id,
                 )
                 answer = reply.description
             else:
                 answer = await self.gateway.reply(
-                    context, current, self.memory.style_requests(chat_id)
+                    conversation_context, current_message, self.memory.style_requests(chat_id)
                 )
                 payload: dict[str, Any] = {
                     "chat_id": chat_id,
@@ -146,34 +279,46 @@ class ConversationService:
                     },
                     "link_preview_options": {"is_disabled": True},
                 }
-                if topic:
-                    payload["message_thread_id"] = topic
+
+                if topic_id:
+                    payload["message_thread_id"] = topic_id
+
                 sent = await self.telegram.call("sendMessage", **payload)
-            self.memory.record_bot(sent, chat_id, topic, message["message_id"], answer)
+
+            self.memory.record_bot(sent, chat_id, topic_id, message["message_id"], answer)
             self.memory.forget_reply(chat_id, message["message_id"])
-            LOG.info("Ответ отправлен: chat_id=%s, trigger=%s", chat_id, kind)
+            LOGGER.info("Ответ отправлен: chat_id=%s, trigger=%s", chat_id, reply_kind)
         except BotError as exc:
-            LOG.warning("%s", exc)
-            if kind != "banana":
-                self.memory.queue_reply(message, kind, time.time() + 30)
+            LOGGER.warning("%s", exc)
+
+            if reply_kind != "banana":
+                self.memory.queue_reply(message, reply_kind, time.time() + 30)
         finally:
-            self.last[key] = time.time()
+            self.last[chat_key] = time.time()
             self.save()
 
     async def process_pending(self) -> None:
+        """Обрабатывает готовые задания и удаляет устаревшие.
+
+        :return: Не возвращает значение.
+        """
         for _ in range(20):
-            pending = self.memory.due_reply(time.time())
-            if pending is None:
+            pending_reply = self.memory.due_reply(time.time())
+
+            if pending_reply is None:
                 return
-            message, kind = pending
+
+            message, reply_kind = pending_reply
             chat_id = message["chat"]["id"]
             message_id = message["message_id"]
-            if chat_id not in self.settings.chats or time.time() - message.get("date", 0) > 600:
+
+            if not self.eligible(message, max_age=600):
                 self.memory.forget_reply(chat_id, message_id)
-                LOG.info(
+                LOGGER.info(
                     "Устаревший отложенный ответ удалён: chat_id=%s, message_id=%s",
                     chat_id,
                     message_id,
                 )
                 continue
-            await self.respond(message, kind)
+
+            await self.respond(message, reply_kind)

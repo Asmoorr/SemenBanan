@@ -5,7 +5,12 @@ import subprocess
 
 
 def ffmpeg_executable() -> str:
+    """Находит системный или установленный с пакетом FFmpeg.
+
+    :return: Путь к исполняемому файлу FFmpeg.
+    """
     ffmpeg = shutil.which("ffmpeg")
+
     if not ffmpeg:
         try:
             import imageio_ffmpeg
@@ -15,13 +20,20 @@ def ffmpeg_executable() -> str:
             raise RuntimeError(
                 "Установи FFmpeg или пакет imageio-ffmpeg для голосовых сообщений."
             ) from None
+
     return ffmpeg
 
 
 def encode_voice(wav_bytes: bytes) -> bytes:
+    """Кодирует WAV в голосовое сообщение OGG/Opus.
+
+    :param wav_bytes: Исходное аудио в формате WAV.
+    :return: Байты готового голосового сообщения.
+    """
     ffmpeg = ffmpeg_executable()
+
     try:
-        result = subprocess.run(
+        encoding_result = subprocess.run(
             [
                 ffmpeg,
                 "-hide_banner",
@@ -53,6 +65,8 @@ def encode_voice(wav_bytes: bytes) -> bytes:
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         raise RuntimeError("Не удалось закодировать голосовое сообщение через FFmpeg.") from None
-    if not result.stdout.startswith(b"OggS"):
+
+    if not encoding_result.stdout.startswith(b"OggS"):
         raise RuntimeError("FFmpeg не вернул OGG/Opus.")
-    return result.stdout
+
+    return encoding_result.stdout

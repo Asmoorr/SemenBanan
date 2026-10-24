@@ -1,1 +1,1 @@
-"""SemenBanan application package."""
+"""Компоненты пакета audio."""

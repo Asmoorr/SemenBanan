@@ -5,35 +5,57 @@ import logging
 import math
 import time
 
+from semen_banan.conversation.models import BotIdentity
 from semen_banan.conversation.ports import Telegram
 from semen_banan.conversation.service import ConversationService
 from semen_banan.errors import BotError
 
-LOG = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 async def poll(
-    telegram: Telegram, bot: ConversationService | None, me: dict, discover: bool = False
+    telegram: Telegram,
+    conversation_service: ConversationService | None,
+    bot_identity: BotIdentity,
+    discover: bool = False,
 ) -> None:
-    if not discover and bot is None:
-        raise ValueError("A conversation service is required for polling")
-    # Discard offline backlog so starting the script never causes unsolicited replies.
-    tail = await telegram.call("getUpdates", offset=-1, timeout=0, allowed_updates=[])
-    offset = tail[-1]["update_id"] + 1 if tail else 0
+    """Получает обновления Telegram и обслуживает очередь ответов.
+
+    :param telegram: Клиент Telegram для получения и отправки сообщений.
+    :param conversation_service: Сервис обработки диалога.
+    :param bot_identity: Идентификатор и имя Telegram-бота.
+    :param discover: Признак режима определения ID групп.
+    :return: Не возвращает значение.
+    """
+    if not discover and conversation_service is None:
+        raise ValueError("Для получения обновлений нужен сервис диалога.")
+
+    # Пропускаем накопившиеся обновления, чтобы запуск не вызывал старых ответов.
+    latest_updates = await telegram.call("getUpdates", offset=-1, timeout=0, allowed_updates=[])
+    offset = latest_updates[-1]["update_id"] + 1 if latest_updates else 0
 
     print(
         "Режим поиска групп: напиши /id в группе, ID появится здесь."
         if discover
-        else f"Семён @{me['username']} слушает группу. Остановка: Ctrl+C.",
+        else f"Семён @{bot_identity['username']} слушает группу. Остановка: Ctrl+C.",
         flush=True,
     )
+
     while True:
-        if bot is not None:
-            await bot.process_pending()
-        next_due = bot.memory.next_reply_due() if bot is not None else None
-        poll_timeout = (
-            25 if next_due is None else max(1, min(25, math.ceil(next_due - time.time())))
+        if conversation_service is not None:
+            await conversation_service.process_pending()
+
+        next_reply_time = (
+            conversation_service.memory.next_reply_due()
+            if conversation_service is not None
+            else None
         )
+        poll_timeout = (
+            25
+            if next_reply_time is None
+            else max(1, min(25, math.ceil(next_reply_time - time.time())))
+        )
+
         try:
             updates = await telegram.call(
                 "getUpdates", offset=offset, timeout=poll_timeout, allowed_updates=[]
@@ -41,20 +63,27 @@ async def poll(
         except BotError as exc:
             if "409" in str(exc) or "401" in str(exc):
                 raise
-            LOG.warning("%s Повтор через 10 секунд.", exc)
+
+            LOGGER.warning("%s Повтор через 10 секунд.", exc)
             await asyncio.sleep(10)
             continue
+
         for update in updates:
-            LOG.info(
+            LOGGER.info(
                 "Telegram update_id=%s, type=%s",
                 update.get("update_id"),
                 next((key for key in update if key != "update_id"), "unknown"),
             )
             offset = update["update_id"] + 1
             message = update.get("message", {})
+
             if discover:
-                chat = message.get("chat", {})
-                if chat.get("type") in {"group", "supergroup"}:
-                    print(f"ALLOWED_CHAT_IDS={chat['id']}  ({chat.get('title', '')})", flush=True)
-            elif bot is not None:
-                await bot.handle(message)
+                chat_data = message.get("chat", {})
+
+                if chat_data.get("type") in {"group", "supergroup"}:
+                    print(
+                        f"ALLOWED_CHAT_IDS={chat_data['id']}  ({chat_data.get('title', '')})",
+                        flush=True,
+                    )
+            elif conversation_service is not None:
+                await conversation_service.handle(message)
