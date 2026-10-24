@@ -51,6 +51,7 @@ class ReactionSelection:
 
     addressed_to_bot: bool
     emoji: str
+    explicit_request: bool
 
     @classmethod
     def parse(cls, content: str, available: list[str]) -> ReactionSelection:
@@ -62,13 +63,21 @@ class ReactionSelection:
         """
         try:
             data = json.loads(content)
-            if not isinstance(data, dict) or set(data) != {"addressed_to_bot", "emoji"}:
+            if not isinstance(data, dict) or set(data) != {
+                "addressed_to_bot",
+                "emoji",
+                "explicit_request",
+            }:
                 raise ValueError
-            if type(data["addressed_to_bot"]) is not bool or not isinstance(data["emoji"], str):
+            if (
+                type(data["addressed_to_bot"]) is not bool
+                or type(data["explicit_request"]) is not bool
+                or not isinstance(data["emoji"], str)
+            ):
                 raise ValueError
             normalized = {emoji.replace("\ufe0f", ""): emoji for emoji in available}
             emoji = normalized[data["emoji"].replace("\ufe0f", "")]
-            return cls(data["addressed_to_bot"], emoji)
+            return cls(data["addressed_to_bot"], emoji, data["explicit_request"])
         except (ValueError, TypeError, KeyError) as error:
             raise BotError("Модель вернула недопустимую реакцию.") from error
 
@@ -163,10 +172,6 @@ class ReactionService:
             del self.seen[next(iter(self.seen))]
 
         chance = random.random()
-        if chance >= max(
-            self.settings.reaction_probability, self.settings.addressed_reaction_probability
-        ):
-            return
         try:
             allowed = await self.available_reactions(key[0])
             if not allowed:
@@ -201,7 +206,7 @@ class ReactionService:
                 if addressed
                 else self.settings.reaction_probability
             )
-            if chance >= probability:
+            if not selection.explicit_request and chance >= probability:
                 return
             await self.telegram.call(
                 "setMessageReaction",

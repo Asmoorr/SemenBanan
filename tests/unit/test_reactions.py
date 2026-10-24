@@ -25,13 +25,17 @@ class ReactionSchema(unittest.TestCase):
 
         :return: Не возвращает значение.
         """
-        result = ReactionSelection.parse('{"addressed_to_bot":true,"emoji":"❤️"}', ["❤"])
+        result = ReactionSelection.parse(
+            '{"addressed_to_bot":true,"emoji":"❤️","explicit_request":false}', ["❤"]
+        )
         self.assertEqual(result.emoji, "❤")
         for content in (
             "{}",
-            '{"addressed_to_bot":"true","emoji":"👍"}',
-            '{"addressed_to_bot":false,"emoji":"🔥"}',
-            '{"addressed_to_bot":false,"emoji":"👍👍"}',
+            '{"addressed_to_bot":true,"emoji":"👍"}',
+            '{"addressed_to_bot":true,"emoji":"👍","explicit_request":"true"}',
+            '{"addressed_to_bot":"true","emoji":"👍","explicit_request":false}',
+            '{"addressed_to_bot":false,"emoji":"🔥","explicit_request":false}',
+            '{"addressed_to_bot":false,"emoji":"👍👍","explicit_request":false}',
         ):
             with self.subTest(content=content), self.assertRaises(BotError):
                 ReactionSelection.parse(content, ["👍"])
@@ -77,7 +81,9 @@ class ReactionBehavior(unittest.IsolatedAsyncioTestCase):
                 {"type": "emoji", "emoji": "😢"},
             ]
         }
-        self.gateway.select_reaction.return_value = '{"addressed_to_bot":false,"emoji":"👍"}'
+        self.gateway.select_reaction.return_value = (
+            '{"addressed_to_bot":false,"emoji":"👍","explicit_request":false}'
+        )
         self.service = ReactionService(
             self.settings,
             self.telegram,
@@ -102,19 +108,42 @@ class ReactionBehavior(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(reactions), 1)
         self.assertEqual(reactions[0].kwargs["reaction"], [{"type": "emoji", "emoji": "👍"}])
 
-    async def test_addressed_probability_and_fast_skip(self) -> None:
-        """Применяет 1/3 для обращения и не вызывает модель выше обеих вероятностей.
+    async def test_addressed_probability_boundary(self) -> None:
+        """Применяет 1/3 для обращения и пропускает реакцию на границе вероятности.
 
         :return: Не возвращает значение.
         """
-        self.gateway.select_reaction.return_value = '{"addressed_to_bot":true,"emoji":"👍"}'
+        self.gateway.select_reaction.return_value = (
+            '{"addressed_to_bot":true,"emoji":"👍","explicit_request":false}'
+        )
         with patch("semen_banan.conversation.reactions.random.random", return_value=0.3):
             await self.service.maybe_react(message("Семён, лайкни"), [])
         self.assertEqual(self.telegram.call.await_args.args[0], "setMessageReaction")
         self.gateway.select_reaction.reset_mock()
         with patch("semen_banan.conversation.reactions.random.random", return_value=1 / 3):
             await self.service.maybe_react({**message(), "message_id": 11}, [])
-        self.gateway.select_reaction.assert_not_awaited()
+        self.gateway.select_reaction.assert_awaited_once()
+
+    async def test_explicit_request_bypasses_probability(self) -> None:
+        """Выполняет явную просьбу даже при нулевых вероятностях.
+
+        :return: Не возвращает значение.
+        """
+        self.service.allowed_cache[-123] = (float("inf"), ["👻"])
+        self.service.settings = replace(
+            self.settings, reaction_probability=0, addressed_reaction_probability=0
+        )
+        self.gateway.select_reaction.return_value = (
+            '{"addressed_to_bot":true,"emoji":"👻","explicit_request":true}'
+        )
+        with patch("semen_banan.conversation.reactions.random.random", return_value=0.999):
+            await self.service.maybe_react(
+                message("Семен а поставь реакт призрака на это сообщение"), []
+            )
+        self.assertEqual(self.telegram.call.await_args.args[0], "setMessageReaction")
+        self.assertEqual(
+            self.telegram.call.await_args.kwargs["reaction"], [{"type": "emoji", "emoji": "👻"}]
+        )
 
     async def test_own_message_is_excluded_but_other_bots_and_media_allowed(self) -> None:
         """Исключает самого Семёна, но допускает медиа и других ботов.
@@ -140,7 +169,9 @@ class ReactionBehavior(unittest.IsolatedAsyncioTestCase):
 
         :return: Не возвращает значение.
         """
-        self.gateway.select_reaction.return_value = '{"addressed_to_bot":false,"emoji":"🔥"}'
+        self.gateway.select_reaction.return_value = (
+            '{"addressed_to_bot":false,"emoji":"🔥","explicit_request":false}'
+        )
         with patch("semen_banan.conversation.reactions.random.random", return_value=0):
             await self.service.maybe_react(message(), [])
         self.assertEqual(self.telegram.call.await_count, 1)

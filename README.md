@@ -1,20 +1,50 @@
-# SemenBanan 🍌
+<div align="center">
 
-Telegram-бот Семён: отвечает в разрешённых группах через OpenClaw Gateway и создаёт музыкальные голосовые сообщения и картинки. История, настройки характера и очередь ответов сохраняются локально. Режим ответа и параметры музыки определяет LLM через OpenClaw по сообщению и контексту чата.
+![Белая волна](https://capsule-render.vercel.app/api?type=waving&color=FFFFFF&height=100&section=header)
 
-## Быстрый запуск
+# Семён Банан
 
-Нужны **Python 3.13**, Telegram-бот и настроенный OpenClaw Gateway с endpoint `/v1/chat/completions` и агентом `semyon`.
+### Шестой участник "Закулисья"
 
-1. Добавь бота в группу и отключи privacy через BotFather. После изменения privacy добавь бота в группу заново.
-2. Создай `.env` по образцу `.env.example`, если файла ещё нет. Заполни токены, адрес Gateway и `ALLOWED_CHAT_IDS`.
-3. Выполни из папки проекта:
+`† Разговоры после полуночи` · `† Музыка из подвала` · `† Образы из тьмы`
+
+Telegram-бот с характером и памятью 🦇🖤<br />
+Общается через **OpenClaw**, создаёт музыку, голосовые сообщения и картинки,<br />
+знает участников группы и выбирает реакции по смыслу переписки
+
+```text
+        /\_/\
+       ( o.o )   †
+        >🍌<
+```
+
+### Технологии
+
+![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&labelColor=000000&logo=python&logoColor=FFD43B)
+![OpenClaw](https://img.shields.io/badge/OpenClaw-Gateway-713747?style=for-the-badge&labelColor=000000)
+![Telegram](https://img.shields.io/badge/Telegram-Bot_API-267A9E?style=for-the-badge&labelColor=000000&logo=telegram&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-Memory-52616B?style=for-the-badge&labelColor=000000&logo=sqlite&logoColor=white)
+
+![Silero](https://img.shields.io/badge/Silero-Local_TTS-66537A?style=flat-square&labelColor=000000)
+![PyTorch](https://img.shields.io/badge/PyTorch-Audio-9B4235?style=flat-square&labelColor=000000&logo=pytorch&logoColor=EE4C2C)
+![Ruff](https://img.shields.io/badge/Ruff-Lint-687349?style=flat-square&labelColor=000000&logo=ruff&logoColor=D7FF64)
+![mypy](https://img.shields.io/badge/mypy-Types-626A86?style=flat-square&labelColor=000000)
+
+🕯 ────────────── † ────────────── 🕯
+
+</div>
+
+## Запуск
+
+Нужны **Python 3.13**, Telegram-бот и настроенный **OpenClaw Gateway**. Подготовь `.env` по [образцу](.env.example) — порядок настройки описан в [инструкции](docs/usage.md)
+
+Запуск из папки проекта, остановка — `Ctrl+C`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-При первом запуске скрипт создаст окружение Python 3.13, установит пакет с зависимостями и загрузит музыкальные ресурсы. Напиши «Семён, ты тут?» или «Семён, сыграй 30 секунд при 85 BPM, гитара и бас, без голоса, бас 40%». Остановка — Ctrl+C.
+Первый запуск создаст окружение, установит зависимости и загрузит музыкальные ресурсы
 
 Фоновый запуск и остановка:
 
@@ -23,65 +53,26 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1 -Background
 powershell -ExecutionPolicy Bypass -File .\stop.ps1
 ```
 
-## Диагностика и проверка генерации
+## Документация
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start.ps1 --check
-powershell -ExecutionPolicy Bypass -File .\start.ps1 --check-gateway
-powershell -ExecutionPolicy Bypass -File .\start.ps1 --check-music
-powershell -ExecutionPolicy Bypass -File .\start.ps1 --check-image
-```
+| Вопрос | Куда заглянуть |
+| :--- | :--- |
+| Установка, OpenClaw и параметры `.env` | [Настройка проекта](docs/usage.md#установка-вручную) |
+| Музыка и голос | [Параметры генерации](docs/usage.md#точные-параметры-музыкальной-записи) |
+| Картинки и фото участников | [Изображения](docs/usage.md#генерация-картинок) · [Сведения о группе](docs/usage.md#сведения-о-группе-и-фотографии-участников) |
+| Случайные ответы, реакции и вероятности | [Ответы](docs/usage.md#случайные-ответы-и-оформление) · [Реакции](docs/usage.md#реакции-на-сообщения) |
+| Диагностика и тестирование | [Диагностика](docs/usage.md#диагностические-режимы) · [Проверки разработки](docs/usage.md#проверки-разработки) |
+| Модули, данные и устройство приложения | [Архитектура](docs/architecture.md) |
+| Промпты и правила разработки | [Промпты](docs/usage.md#редактирование-промптов) · [Стиль кода](docs/code-style.md) |
 
-`--check` проверяет Telegram и ответ модели; `--check-gateway` — только модель. `--check-music` определяет режим и параметры через LLM, запрашивает ноты и аранжировку, запускает отдельный генератор, сводит дорожки и сохраняет OGG в `.runtime/checks/music.ogg`. Сообщения в Telegram не отправляются. Запросы к модели реальные.
+[Лицензии компонентов](THIRD_PARTY.md)
 
-Музыка поддерживает длительность 5–60 секунд, темп 60–180 BPM, до четырёх инструментов и громкость каждой дорожки 0–100%. Без новых параметров сохраняется прежний режим.
+<div align="center">
 
-Для проверки NanoMaestro или другого состава дорожек:
+🕯 ────────────── † ────────────── 🕯
 
-```powershell
-.\.venv\Scripts\python.exe -m semen_banan --check-music --request "Сыграй через NanoMaestro без речи" --output .runtime/checks/nano.ogg
-```
+<sub>Собран из кода, риффов и бананов · Не будить без контекста (¬､¬) 🦇🖤🍌</sub>
 
-Если ID группы неизвестен, останови основной экземпляр и запусти `start.ps1 --discover-chats`. Отправь сообщение в группе, перенеси выведенный ID в `.env` и заверши режим через Ctrl+C. Одновременно должен работать только один получатель обновлений Telegram. Остальные диагностические режимы не используют polling и могут работать рядом с ботом.
+![Белая волна](https://capsule-render.vercel.app/api?type=waving&color=FFFFFF&height=100&section=footer)
 
-## Код и данные
-
-- `src/semen_banan/` — приложение: диалоги, интеграции, хранение и аудио.
-- `tests/unit/`, `tests/integration/` — быстрые и интеграционные проверки.
-- `tools/` — установка ресурсов и инструменты сравнения музыки.
-- `pyproject.toml` — зависимости, Python 3.13 и настройки инструментов.
-- [`src/semen_banan/resources/prompts.toml`](src/semen_banan/resources/prompts.toml) — все промпты, характер персонажа и проверочные запросы.
-- `assets/` — локальные модели; `.runtime/` — журналы и результаты диагностики.
-
-Рабочие `.env`, `memory.sqlite3` и `state.json` остаются в корне. Не публикуй секреты и переписку. Не удаляй файлы SQLite при работающем боте.
-
-## Проверки разработки
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[music,dev]"
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m ruff check src tests tools
-.\.venv\Scripts\python.exe -m mypy
-```
-
-Интеграционные проверки требуют музыкальных ресурсов. Быстрый прогон: `python -m unittest discover -s tests/unit -v`.
-
-[Подробная инструкция](docs/usage.md) · [Архитектура](docs/architecture.md) · [Стиль кода](docs/code-style.md) · [Лицензии компонентов](THIRD_PARTY.md)
-
-Голос настраивается в просьбе: «Семён, музыку с речью, голос ниже на 3 полутона, скорость 0.85, лёгкое эхо». Доступны локальные эффекты робота, телефона, эха, реверберации и хора. Подробности — в [инструкции](docs/usage.md#настройки-локального-голоса).
-
-Модель подбирает инструменты по жанру и настроению запроса. Для тяжёлой музыки доступны электрогитары с овердрайвом и дисторшном, приглушённая электрогитара и электробас. Явно указанный состав имеет приоритет.
-
-Речь по умолчанию создаёт локальная Silero v5.6 (Eugene); доступны ещё четыре голоса и прежний Denis. Во время речи инструментал приглушается мягко, максимум примерно на 2 дБ.
-
-
-Картинки: «Семён, нарисуй кота в космосе, акварель, вертикально». OpenClaw создаёт изображение, бот отправляет его ответом в ту же тему Telegram. Нужны доступный `openclaw infer image generate` и авторизация провайдера изображений. Для OpenClaw в WSL задай `OPENCLAW_IMAGE_WSL_DISTRO` и, при необходимости, `OPENCLAW_IMAGE_EXECUTABLE` в `.env`. Проверка `--check-image` сохраняет JPEG без отправки в чат. [Настройка картинок](docs/usage.md#генерация-картинок).
-
-
-Семён знает участников «Закулисья» из `group.toml`. Текстовый справочник добавляется во все запросы к модели; фотографии из `assets/participants/` передаются только при `load_participant_photos=true` в решении LLM. Например, «Нарисуй Вьета с бананом» использует все пять подписанных фото как образцы внешности. [Сведения о группе](docs/usage.md#сведения-о-группе-и-фотографии-участников).
-
-
-На сообщения без обращения Семён реагирует с вероятностью 1/20: 80% таких ответов текстовые, 20% — голосовые без музыки. Случайные ответы соблюдают общий интервал и пропускаются при занятости или ошибке. Настройки: `SPONTANEOUS_REPLY_PROBABILITY=0.05`, `SPONTANEOUS_VOICE_PROBABILITY=0.2`. Прямые обращения обрабатываются как раньше.
-
-
-Реакции независимы от ответов: вероятность 1/10 на сообщения других авторов и 1/3 на обращения к Семёну. Эмодзи выбирает LLM по смыслу из разрешённых в группе. Настройки в `.env`: `REACTION_PROBABILITY=0.1`, `ADDRESSED_REACTION_PROBABILITY=0.3333333333333333`. На свои сообщения Семён реакции не ставит.
+</div>
