@@ -10,11 +10,18 @@ from typing import Any
 
 
 def generate(request: dict[str, Any]) -> tuple[bytes, int]:
-    """Создаёт готовое голосовое сообщение из музыкального задания.
+    """Создаёт готовое голосовое из музыкального или речевого задания.
 
     :param request: Исходная просьба или задание генерации.
     :return: Байты OGG/Opus и длительность записи в секундах.
     """
+    if not isinstance(request, dict):
+        raise ValueError("Задание аудиогенератору должно быть JSON-объектом.")
+    if request.get("kind") == "speech":
+        return generate_speech(request.get("text"))
+    if "kind" in request:
+        raise ValueError("Неизвестный вид аудиозадания.")
+
     from semen_banan.audio.customization import AudioCustomization
     from semen_banan.audio.models import AudioRequest
     from semen_banan.audio.pipeline import AudioPipeline
@@ -45,6 +52,39 @@ def generate(request: dict[str, Any]) -> tuple[bytes, int]:
         raise ValueError("Неверный seed генератора.")
 
     return AudioPipeline().generate(AudioRequest(score, use_nano, arrangement, seed, customization))
+
+
+def generate_speech(text: object) -> tuple[bytes, int]:
+    """Создаёт отдельное голосовое из коротких фрагментов речевой реплики.
+
+    :param text: Проверяемый текст из задания рабочего процесса.
+    :return: Байты OGG/Opus и длительность в секундах.
+    """
+    import textwrap
+
+    import numpy as np
+
+    from semen_banan.audio.encoding import encode_voice
+    from semen_banan.audio.mixing import RATE, _decode, _wav
+    from semen_banan.audio.speech import synthesize_speech
+    from semen_banan.audio.types import AudioSamples
+
+    if not isinstance(text, str) or not 1 <= len(text.strip()) <= 1200:
+        raise ValueError("Реплика для озвучивания должна содержать от 1 до 1200 символов.")
+    chunks = textwrap.wrap(text, width=80, break_on_hyphens=False)
+    samples: list[AudioSamples] = []
+    silence = np.zeros((round(RATE * 0.12), 2), dtype=np.float32)
+    sample_count = 0
+    for chunk in chunks:
+        if samples:
+            samples.append(silence)
+            sample_count += len(silence)
+        audio = _decode(synthesize_speech(chunk))
+        samples.append(audio)
+        sample_count += len(audio)
+        if sample_count > RATE * 90:
+            raise RuntimeError("Голосовая реплика слишком длинная.")
+    return encode_voice(_wav(np.concatenate(samples))), math.ceil(sample_count / RATE)
 
 
 def main() -> int:

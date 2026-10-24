@@ -13,6 +13,7 @@ from semen_banan.conversation.models import (
     Correction,
     RoutingMetadata,
 )
+from semen_banan.conversation.style import normalize_reply_style
 from semen_banan.errors import BotError
 from semen_banan.generation.prompts import PromptCatalog, load_prompts
 from semen_banan.group import GroupCatalog
@@ -48,6 +49,38 @@ class OpenClawClient:
         :return: Системная инструкция текстовых ответов.
         """
         return self.prompts.persona
+
+    async def select_reaction(
+        self,
+        conversation_context: ConversationContext,
+        current_message: ContextMessage,
+        metadata: RoutingMetadata,
+        available_reactions: list[str],
+        style_requests: list[str] | None = None,
+    ) -> str:
+        """Выбирает реакцию по смыслу, не принимая решение о вероятности отправки.
+
+        :param conversation_context: Контекст темы или цепочки.
+        :param current_message: Исходное сообщение для реакции.
+        :param metadata: Признаки ответа боту и тип сообщения.
+        :param available_reactions: Список разрешённых обычных эмодзи.
+        :param style_requests: Пожелания к манере общения Семёна.
+        :return: JSON с addressed_to_bot и emoji.
+        """
+        return await self._complete(
+            self.prompts.reactions,
+            json.dumps(
+                {
+                    "conversation_chain": conversation_context,
+                    "current": current_message,
+                    "metadata": metadata,
+                    "available_reactions": available_reactions,
+                    "character_requests": style_requests or [],
+                },
+                ensure_ascii=False,
+            ),
+            1200,
+        )
 
     async def classify(
         self,
@@ -94,19 +127,21 @@ class OpenClawClient:
         :param style_requests: Сохранённые пожелания к характеру и манере речи.
         :return: Текст ответа Семёна.
         """
-        return (
-            await self._complete(
-                self.persona,
-                json.dumps(
-                    {
-                        "conversation_chain": conversation_context,
-                        "reply_to": current_message,
-                        "character_requests": style_requests or [],
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-        )[:1200]
+        return normalize_reply_style(
+            (
+                await self._complete(
+                    self.persona,
+                    json.dumps(
+                        {
+                            "conversation_chain": conversation_context,
+                            "reply_to": current_message,
+                            "character_requests": style_requests or [],
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            )[:1200]
+        )
 
     async def compose(
         self, conversation_context: ConversationContext, current_message: ContextMessage

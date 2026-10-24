@@ -18,6 +18,7 @@ class PromptCatalog:
     participant_image_template: str
     context_notice: str
     persona: str
+    reactions: str
     routing: str
     composition: str
     arrangement_template: str
@@ -77,6 +78,7 @@ class PromptCatalog:
                 participant_image_template=read_text("group", "image_template"),
                 persona=read_text("persona", "system"),
                 routing=read_text("routing", "system"),
+                reactions=read_text("reactions", "system"),
                 composition=read_text("composition", "system"),
                 arrangement_template=read_text("arrangement", "system"),
                 short_speech=read_text("arrangement", "short_speech"),

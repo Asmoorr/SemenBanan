@@ -21,6 +21,7 @@ class ContextMessage(TypedDict):
     in_reply_to_semyon: NotRequired[str]
     music_parameters: NotRequired[dict[str, Any]]
     load_participant_photos: NotRequired[bool]
+    spontaneous_reply: NotRequired[bool]
 
 
 type ConversationContext = list[ContextMessage]
@@ -33,6 +34,8 @@ class RoutingMetadata(TypedDict, total=False):
     in_chain: bool
     reply_to_bot: bool
     mentions_bot: bool
+    content_type: str
+    sticker_emoji: str
     force_addressed: bool
 
 

@@ -8,6 +8,7 @@ import httpx
 from semen_banan.audio.jobs import AudioJobRunner
 from semen_banan.config import AppPaths, Settings
 from semen_banan.conversation.models import ContextMessage
+from semen_banan.conversation.reactions import ReactionService
 from semen_banan.conversation.routing import MessageRouter, ReplyMode
 from semen_banan.conversation.service import ConversationService
 from semen_banan.errors import BotError
@@ -131,6 +132,7 @@ async def run(mode: str, output: Path | None = None, request: str | None = None)
                 CooldownStore(paths.state),
                 music,
                 images,
+                ReactionService(settings, telegram, gateway, bot_identity),
             )
 
         await poll(telegram, conversation_service, bot_identity, discover=mode == "discover-chats")

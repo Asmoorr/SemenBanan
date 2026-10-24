@@ -57,6 +57,25 @@ class Telegram(Protocol):
 class Gateway(Protocol):
     """Контракт запросов языковой модели через OpenClaw."""
 
+    async def select_reaction(
+        self,
+        conversation_context: ConversationContext,
+        current_message: ContextMessage,
+        metadata: RoutingMetadata,
+        available_reactions: list[str],
+        style_requests: list[str] | None = None,
+    ) -> str:
+        """Выбирает осмысленную реакцию и определяет обращение к боту.
+
+        :param conversation_context: Контекст темы или цепочки.
+        :param current_message: Сообщение, на которое предлагается реакция.
+        :param metadata: Личность бота и тип сообщения.
+        :param available_reactions: Эмодзи, разрешённые в группе.
+        :param style_requests: Сохранённые пожелания к стилю общения.
+        :return: JSON с addressed_to_bot и emoji.
+        """
+        ...
+
     async def classify(
         self,
         conversation_context: ConversationContext,

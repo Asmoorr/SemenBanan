@@ -25,6 +25,7 @@ class ReplyMode(StrEnum):
     TEXT = "text"
     MUSIC = "music"
     IMAGE = "image"
+    VOICE = "voice"
 
 
 class ReplyTrigger(StrEnum):
@@ -35,6 +36,7 @@ class ReplyTrigger(StrEnum):
     CHAIN = "chain"
     REQUEST = "request"
     BANANA = "banana"
+    SPONTANEOUS = "spontaneous"
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +148,15 @@ class RouteDecision:
             if mode == ReplyMode.IGNORE and (style_request is not None or load_participant_photos):
                 raise ValueError
 
+            if trigger == ReplyTrigger.SPONTANEOUS and (
+                mode not in {ReplyMode.TEXT, ReplyMode.VOICE}
+                or style_request is not None
+                or load_participant_photos
+            ):
+                raise ValueError
+            if mode == ReplyMode.VOICE and trigger != ReplyTrigger.SPONTANEOUS:
+                raise ValueError
+
             music = None
             image = None
             parameters = routing_data["parameters"]
@@ -238,7 +249,10 @@ class MessageRouter:
             )
 
             try:
-                return RouteDecision.parse(content)
+                decision = RouteDecision.parse(content)
+                if decision.trigger == ReplyTrigger.SPONTANEOUS or decision.mode == ReplyMode.VOICE:
+                    raise ValueError("Случайный ответ и его формат выбирает приложение.")
+                return decision
             except ValueError as exc:
                 if attempt:
                     raise BotError("Модель дважды вернула неверный режим обработки.") from exc

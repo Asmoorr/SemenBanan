@@ -76,12 +76,15 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
 
         :return: Не возвращает значение.
         """
+        random_patch = patch("semen_banan.conversation.service.random.random", return_value=0.99)
+        random_patch.start()
+        self.addCleanup(random_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.settings = Settings("unused", frozenset({-123}), "http://localhost", "unused")
         self.telegram = AsyncMock()
         self.gateway = AsyncMock()
         self.gateway.classify.return_value = route_json()
-        self.gateway.reply.return_value = "Банановый комитет одобряет."
+        self.gateway.reply.return_value = "Банановый комитет одобряет"
         self.arrangement = {
             "drums": [{"midi": 36, "beat": 0, "velocity": 70}],
             "speech": [{"beat": 0, "text": "С вами Семён."}],
@@ -185,7 +188,9 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
 
         self.gateway.reply.assert_not_awaited()
 
-        with patch("semen_banan.conversation.service.random.random", return_value=0.24):
+        with patch(
+            "semen_banan.conversation.service.random.random", side_effect=[0.04, 0.2, 0.04, 0.2]
+        ):
             await self.bot.handle(message("бананы"))
             self.bot.last["-123"] -= 11
             await self.bot.handle(message("бананы"))
@@ -262,7 +267,7 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
         second["reply_to_message"] = {
             "message_id": 1000,
             "from": {"id": 1},
-            "text": "Банановый комитет одобряет.",
+            "text": "Банановый комитет одобряет",
         }
         self.telegram.call.return_value = {"message_id": 1001}
         await self.bot.handle(second)
@@ -275,7 +280,7 @@ class Behavior(unittest.IsolatedAsyncioTestCase):
         chain = self.gateway.reply.call_args.args[0]
         self.assertEqual(
             [x["text"] for x in chain],
-            ["Семён, начни шутку", "Банановый комитет одобряет.", "Ну ты даёшь"],
+            ["Семён, начни шутку", "Банановый комитет одобряет", "Ну ты даёшь"],
         )
 
     async def test_character_request_persists_across_restart(self) -> None:

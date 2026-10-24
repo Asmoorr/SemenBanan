@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from semen_banan.audio.customization import AudioCustomization
 from semen_banan.audio.models import Arrangement, AudioRequest, AudioResult, Score
@@ -67,16 +68,33 @@ class AudioJobRunner:
         :param customization: Проверенные длительность, темп, инструменты и уровни.
         :return: Голосовое сообщение, его длительность и PID генератора.
         """
+        payload = AudioRequest(
+            score, use_nano, arrangement, self.seed, customization or AudioCustomization()
+        ).to_payload()
+        return await self._run_request(payload, timeout)
+
+    async def speak(self, text: str, timeout: float = 90) -> AudioResult:
+        """Озвучивает обычную реплику без музыкального сопровождения.
+
+        :param text: Текст реплики длиной до 1200 символов.
+        :param timeout: Максимальное время ожидания аудиогенератора.
+        :return: Голосовое OGG/Opus с длительностью и PID процесса.
+        """
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 1200:
+            raise AudioError("Реплика для озвучивания должна содержать от 1 до 1200 символов.")
+        return await self._run_request({"kind": "speech", "text": text}, timeout)
+
+    async def _run_request(self, payload: dict[str, Any], timeout: float) -> AudioResult:
+        """Выполняет музыкальное или речевое задание в изолированном процессе.
+
+        :param payload: Проверенное задание генерации аудио.
+        :param timeout: Максимальное время ожидания в секундах.
+        :return: Готовое голосовое сообщение.
+        """
         if not math.isfinite(timeout) or timeout <= 0:
             raise AudioError("Время ожидания генерации должно быть положительным.")
-
         paths = self.paths
-        request = json.dumps(
-            AudioRequest(
-                score, use_nano, arrangement, self.seed, customization or AudioCustomization()
-            ).to_payload(),
-            ensure_ascii=False,
-        ).encode("utf-8")
+        request = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         # Локальному генератору не нужны секреты Telegram и Gateway.
         worker_environment = {
             key: value

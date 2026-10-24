@@ -78,13 +78,16 @@ class Settings:
     gateway_token: str
     agent: str = "semyon"
     cooldown: float = 10
-    probability: float = 0.25
     timeout: float = 90
     audio_timeout: float = 90
     image_timeout: float = 180
     image_model: str = "openai/gpt-image-2"
     image_executable: str = "openclaw"
     image_wsl_distro: str = ""
+    spontaneous_probability: float = 0.05
+    spontaneous_voice_probability: float = 0.2
+    reaction_probability: float = 0.1
+    addressed_reaction_probability: float = 1 / 3
 
     @classmethod
     def load(cls, paths: AppPaths | None = None) -> Settings:
@@ -107,13 +110,20 @@ class Settings:
                 gateway_token=os.getenv("OPENCLAW_GATEWAY_TOKEN", "").strip(),
                 agent=os.getenv("OPENCLAW_AGENT_ID", "semyon").strip(),
                 cooldown=float(os.getenv("COOLDOWN_SECONDS", "10")),
-                probability=float(os.getenv("BANANA_PROBABILITY", "0.25")),
                 timeout=float(os.getenv("REQUEST_TIMEOUT", "90")),
                 audio_timeout=float(os.getenv("AUDIO_TIMEOUT_SECONDS", "90")),
                 image_timeout=float(os.getenv("IMAGE_TIMEOUT_SECONDS", "180")),
                 image_model=os.getenv("OPENCLAW_IMAGE_MODEL", "openai/gpt-image-2").strip(),
                 image_executable=os.getenv("OPENCLAW_IMAGE_EXECUTABLE", "openclaw").strip(),
                 image_wsl_distro=os.getenv("OPENCLAW_IMAGE_WSL_DISTRO", "").strip(),
+                reaction_probability=float(os.getenv("REACTION_PROBABILITY", "0.1")),
+                addressed_reaction_probability=float(
+                    os.getenv("ADDRESSED_REACTION_PROBABILITY", str(1 / 3))
+                ),
+                spontaneous_probability=float(os.getenv("SPONTANEOUS_REPLY_PROBABILITY", "0.05")),
+                spontaneous_voice_probability=float(
+                    os.getenv("SPONTANEOUS_VOICE_PROBABILITY", "0.2")
+                ),
             )
         except ValueError:
             raise BotError("Проверь числовые значения в .env.") from None
@@ -122,20 +132,26 @@ class Settings:
             math.isfinite(configured_value)
             for configured_value in (
                 settings.cooldown,
-                settings.probability,
                 settings.timeout,
                 settings.audio_timeout,
                 settings.image_timeout,
+                settings.spontaneous_probability,
+                settings.reaction_probability,
+                settings.addressed_reaction_probability,
+                settings.spontaneous_voice_probability,
             )
         ):
             raise BotError("Числовые настройки должны быть конечными.")
 
         if (
             settings.cooldown < 0
-            or not 0 <= settings.probability <= 1
             or settings.timeout <= 0
             or settings.audio_timeout <= 0
             or not 10 <= settings.image_timeout <= 600
+            or not 0 <= settings.spontaneous_probability <= 1
+            or not 0 <= settings.spontaneous_voice_probability <= 1
+            or not 0 <= settings.reaction_probability <= 1
+            or not 0 <= settings.addressed_reaction_probability <= 1
         ):
             raise BotError("Неверные интервалы или вероятность в .env.")
 

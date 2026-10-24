@@ -140,6 +140,9 @@ class RoutingBehavior(unittest.IsolatedAsyncioTestCase):
 
         :return: Не возвращает значение.
         """
+        random_patch = patch("semen_banan.conversation.service.random.random", return_value=0.99)
+        random_patch.start()
+        self.addCleanup(random_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.settings = Settings("unused", frozenset({-123}), "http://localhost", "unused")

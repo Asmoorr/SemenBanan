@@ -6,6 +6,7 @@ import random
 import time
 from typing import Any
 
+from semen_banan.audio.jobs import AudioError
 from semen_banan.config import Settings
 from semen_banan.conversation.context import ContextBuilder
 from semen_banan.conversation.models import (
@@ -15,7 +16,9 @@ from semen_banan.conversation.models import (
     TelegramMessage,
 )
 from semen_banan.conversation.ports import ConversationStore, Cooldowns, Gateway, Telegram
+from semen_banan.conversation.reactions import ReactionService
 from semen_banan.conversation.routing import MessageRouter, ReplyMode, ReplyTrigger, RouteDecision
+from semen_banan.conversation.style import normalize_reply_style
 from semen_banan.errors import BotError
 from semen_banan.generation.service import MusicGenerator
 from semen_banan.group import ParticipantPhotosError
@@ -37,6 +40,7 @@ class ConversationService:
         cooldown: Cooldowns,
         music: MusicGenerator,
         images: OpenClawImageGenerator | None = None,
+        reactions: ReactionService | None = None,
     ) -> None:
         """Инициализирует компонент и сохраняет его зависимости.
 
@@ -48,6 +52,7 @@ class ConversationService:
         :param cooldown: Хранилище интервалов между ответами.
         :param music: Сервис создания музыкального ответа.
         :param images: Генератор картинок через OpenClaw.
+        :param reactions: Независимый сервис смысловых реакций.
         :return: Не возвращает значение.
         """
         self.settings = settings
@@ -58,6 +63,7 @@ class ConversationService:
         self.cooldown = cooldown
         self.music = music
         self.images = images
+        self.reactions = reactions
         self.context_builder = ContextBuilder(memory)
         self.router = MessageRouter(gateway)
         self.last = cooldown.load()
@@ -115,7 +121,19 @@ class ConversationService:
         :param message: Исходное сообщение Telegram.
         :return: Не возвращает значение.
         """
-        if not self.eligible(message):
+        reply_eligible = self.eligible(message)
+        if self.reactions is not None and self.reactions.eligible(message):
+            context = self.context_builder.build(
+                message["chat"]["id"],
+                message.get("message_thread_id") or 0,
+                (message.get("reply_to_message") or {}).get("message_id"),
+                message["message_id"],
+                max_chars=4000,
+            )
+            await self.reactions.maybe_react(
+                message, context, self.memory.style_requests(message["chat"]["id"])
+            )
+        if not reply_eligible:
             return
 
         await self.classify_and_respond(message)
@@ -174,16 +192,19 @@ class ConversationService:
             decision.trigger,
         )
 
-        if decision.mode == ReplyMode.IGNORE:
-            self.memory.forget_reply(chat_id, message["message_id"])
-
-            return
-
-        if decision.trigger == ReplyTrigger.BANANA:
-            if random.random() >= self.settings.probability:
+        if decision.mode == ReplyMode.IGNORE or decision.trigger == ReplyTrigger.BANANA:
+            if (
+                time.time() - self.last.get(str(chat_id), 0) < self.settings.cooldown
+                or random.random() >= self.settings.spontaneous_probability
+            ):
                 self.memory.forget_reply(chat_id, message["message_id"])
-
                 return
+            mode = (
+                ReplyMode.VOICE
+                if random.random() < self.settings.spontaneous_voice_probability
+                else ReplyMode.TEXT
+            )
+            decision = RouteDecision(mode, ReplyTrigger.SPONTANEOUS)
         else:
             self.memory.record_incoming(message, self.bot_identity["id"], True)
 
@@ -191,7 +212,11 @@ class ConversationService:
             self.memory.add_style_request(chat_id, decision.style_request)
 
         routed_message = {**message, "_routing": decision.to_payload()}
-        reply_kind = "banana" if decision.trigger == ReplyTrigger.BANANA else decision.mode.value
+        reply_kind = (
+            decision.trigger.value
+            if decision.trigger in {ReplyTrigger.BANANA, ReplyTrigger.SPONTANEOUS}
+            else decision.mode.value
+        )
         await self.respond(routed_message, reply_kind)
 
     async def respond(self, message: TelegramMessage, reply_kind: str) -> None:
@@ -222,14 +247,18 @@ class ConversationService:
 
             return
 
-        reply_kind = "banana" if decision.trigger == ReplyTrigger.BANANA else decision.mode.value
+        reply_kind = (
+            decision.trigger.value
+            if decision.trigger in {ReplyTrigger.BANANA, ReplyTrigger.SPONTANEOUS}
+            else decision.mode.value
+        )
         chat_id = message["chat"]["id"]
         topic_id = message.get("message_thread_id") or 0
         chat_key = str(chat_id)
         now = time.time()
 
         if now - self.last.get(chat_key, 0) < self.settings.cooldown:
-            if reply_kind != "banana":
+            if reply_kind not in {"banana", "spontaneous"}:
                 self.memory.queue_reply(
                     message, reply_kind, self.last[chat_key] + self.settings.cooldown
                 )
@@ -240,7 +269,8 @@ class ConversationService:
                     reply_kind,
                 )
             else:
-                LOGGER.info("Пропуск: интервал 10 секунд, trigger=banana")
+                self.memory.forget_reply(chat_id, message["message_id"])
+                LOGGER.info("Случайный ответ пропущен: действует интервал между репликами")
 
             return
 
@@ -250,6 +280,8 @@ class ConversationService:
 
         try:
             current_message = self.current_message(message)
+            if decision.trigger == ReplyTrigger.SPONTANEOUS:
+                current_message["spontaneous_reply"] = True
             if decision.load_participant_photos:
                 current_message["load_participant_photos"] = True
             parent_message_id = (message.get("reply_to_message") or {}).get("message_id")
@@ -291,15 +323,28 @@ class ConversationService:
                     chat_id,
                     message["message_id"],
                     image_reply.path.read_bytes(),
-                    image_reply.caption,
+                    normalize_reply_style(image_reply.caption),
                     topic_id,
                 )
                 answer = image_reply.description
             else:
-                answer = await self.gateway.reply(
-                    conversation_context, current_message, self.memory.style_requests(chat_id)
+                answer = normalize_reply_style(
+                    await self.gateway.reply(
+                        conversation_context, current_message, self.memory.style_requests(chat_id)
+                    )
                 )
-                sent = await self.send_text(chat_id, message["message_id"], answer, topic_id)
+                if decision.mode == ReplyMode.VOICE:
+                    try:
+                        audio = await self.music.audio.speak(
+                            answer, timeout=self.settings.audio_timeout
+                        )
+                    except AudioError as error:
+                        raise BotError(str(error)) from error
+                    sent = await self.telegram.send_voice(
+                        chat_id, message["message_id"], audio.voice, audio.duration, topic_id
+                    )
+                else:
+                    sent = await self.send_text(chat_id, message["message_id"], answer, topic_id)
 
             self.memory.record_bot(sent, chat_id, topic_id, message["message_id"], answer)
             self.memory.forget_reply(chat_id, message["message_id"])
@@ -307,16 +352,21 @@ class ConversationService:
         except (ImageGenerationError, ParticipantPhotosError) as exc:
             LOGGER.warning("%s", exc)
             try:
-                sent = await self.send_text(chat_id, message["message_id"], str(exc), topic_id)
-                self.memory.record_bot(sent, chat_id, topic_id, message["message_id"], str(exc))
+                error_message = normalize_reply_style(str(exc))
+                sent = await self.send_text(chat_id, message["message_id"], error_message, topic_id)
+                self.memory.record_bot(
+                    sent, chat_id, topic_id, message["message_id"], error_message
+                )
                 self.memory.forget_reply(chat_id, message["message_id"])
             except BotError:
                 self.memory.queue_reply(message, reply_kind, time.time() + 30)
         except BotError as exc:
             LOGGER.warning("%s", exc)
 
-            if reply_kind != "banana":
+            if reply_kind not in {"banana", "spontaneous"}:
                 self.memory.queue_reply(message, reply_kind, time.time() + 30)
+            else:
+                self.memory.forget_reply(chat_id, message["message_id"])
         finally:
             self.last[chat_key] = time.time()
             self.save()
@@ -334,7 +384,7 @@ class ConversationService:
         """
         payload: dict[str, Any] = {
             "chat_id": chat_id,
-            "text": answer,
+            "text": normalize_reply_style(answer),
             "reply_parameters": {"message_id": message_id, "allow_sending_without_reply": False},
             "link_preview_options": {"is_disabled": True},
         }
