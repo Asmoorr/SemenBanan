@@ -9,9 +9,12 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from string import Template
 
 from semen_banan.config import AppPaths, Settings
 from semen_banan.errors import BotError
+from semen_banan.generation.prompts import load_prompts
+from semen_banan.group import GroupCatalog
 from semen_banan.images.models import ImageOptions, ImageReply
 from semen_banan.processes import stop_worker
 
@@ -64,14 +67,19 @@ def prepare_photo(source: Path, destination: Path) -> None:
 class OpenClawImageGenerator:
     """Генерация через штатную команду OpenClaw с кешем повторной отправки."""
 
-    def __init__(self, paths: AppPaths, settings: Settings) -> None:
+    def __init__(
+        self, paths: AppPaths, settings: Settings, group: GroupCatalog | None = None
+    ) -> None:
         """Сохраняет настройки исполнения и каталог готовых изображений.
 
         :param paths: Пути к данным экземпляра приложения.
         :param settings: Модель, таймаут и расположение OpenClaw.
+        :param group: Сведения о группе и фотографии для генерации.
         :return: Не возвращает значение.
         """
         self.settings = settings
+        self.group = group if group is not None else GroupCatalog.load(paths)
+        self.prompts = load_prompts()
         self.directory = paths.runtime / "images"
         self.directory.mkdir(parents=True, exist_ok=True)
 
@@ -88,11 +96,14 @@ class OpenClawImageGenerator:
         linux_path = f"/tmp/semen-banan-{output.parent.name}-{output.name}"
         return linux_path, Path(f"//wsl.localhost/{self.settings.image_wsl_distro}{linux_path}")
 
-    def command(self, options: ImageOptions, output: Path) -> list[str]:
+    def command(
+        self, options: ImageOptions, output: Path, *, reference_paths: tuple[str, ...] = ()
+    ) -> list[str]:
         """Строит список аргументов без оболочки и исполнения текста пользователя.
 
         :param options: Проверенные параметры изображения.
         :param output: Абсолютный путь файла результата.
+        :param reference_paths: Пути всех подписанных фотографий в среде OpenClaw.
         :return: Аргументы штатной команды OpenClaw для текущей платформы.
         """
         output_path, _ = self.output_paths(output)
@@ -108,17 +119,24 @@ class OpenClawImageGenerator:
                 str(int(self.settings.image_timeout) + 15),
             ]
 
-        return prefix + [
+        prompt = options.prompt
+        if self.group.members:
+            prompt = Template(self.prompts.participant_image_template).substitute(
+                request=options.prompt,
+                group_profile=json.dumps(self.group.context(), ensure_ascii=False),
+                photos_loaded="true" if reference_paths else "false",
+            )
+        command_arguments = prefix + [
             self.settings.image_executable,
             "infer",
             "image",
-            "generate",
+            "edit" if reference_paths else "generate",
             "--agent",
             self.settings.agent,
             "--model",
             self.settings.image_model,
             "--prompt",
-            options.prompt,
+            prompt,
             "--size",
             options.size,
             "--count",
@@ -133,6 +151,9 @@ class OpenClawImageGenerator:
             output_path,
             "--json",
         ]
+        for reference_path in reference_paths:
+            command_arguments.extend(["--file", reference_path])
+        return command_arguments
 
     def cleanup(self) -> None:
         """Удаляет только созданные приложением фото старше семи суток.
@@ -148,17 +169,28 @@ class OpenClawImageGenerator:
             if not path.is_symlink() and path.is_file() and path.stat().st_mtime < threshold:
                 path.unlink()
 
-    async def generate(self, options: ImageOptions, job_key: str) -> ImageReply:
+    async def generate(
+        self, options: ImageOptions, job_key: str, *, load_participant_photos: bool = False
+    ) -> ImageReply:
         """Создаёт картинку или использует результат предыдущей попытки отправки.
 
         :param options: Описание, размер и подпись изображения.
         :param job_key: Идентификатор исходного сообщения или диагностического задания.
+        :param load_participant_photos: Передать генератору все фотографии участников.
         :return: Проверенное фото с подписью и описанием для истории.
         """
         self.cleanup()
+        photos = self.group.photos() if load_participant_photos else ()
+        photo_digests = [hashlib.sha256(photo.data).hexdigest() for photo in photos]
         digest = hashlib.sha256(
             json.dumps(
-                [job_key, self.settings.image_model, options.to_payload()],
+                [
+                    job_key,
+                    self.settings.image_model,
+                    options.to_payload(),
+                    self.group.context(),
+                    photo_digests,
+                ],
                 ensure_ascii=False,
                 sort_keys=True,
             ).encode("utf-8")
@@ -171,9 +203,22 @@ class OpenClawImageGenerator:
                 source = Path(temporary_directory) / "image.png"
                 _, readable_source = self.output_paths(source)
                 process = None
+                staged_references: list[Path] = []
                 try:
+                    reference_paths = []
+                    for index, photo in enumerate(photos, 1):
+                        reference = Path(temporary_directory) / f"reference-{index}.jpg"
+                        provider_path, writable_path = self.output_paths(reference)
+                        staged_references.append(writable_path)
+                        writable_path.write_bytes(photo.data)
+                        reference_paths.append(provider_path)
+                    command_arguments = (
+                        self.command(options, source, reference_paths=tuple(reference_paths))
+                        if reference_paths
+                        else self.command(options, source)
+                    )
                     process = await asyncio.create_subprocess_exec(
-                        *self.command(options, source),
+                        *command_arguments,
                         stdout=asyncio.subprocess.DEVNULL,
                         stderr=asyncio.subprocess.DEVNULL,
                         start_new_session=os.name != "nt",
@@ -200,10 +245,11 @@ class OpenClawImageGenerator:
                     if process is not None and process.returncode is None:
                         await stop_worker(process)
                     if self.settings.image_wsl_distro:
-                        try:
-                            readable_source.unlink(missing_ok=True)
-                        except OSError:
-                            LOGGER.warning("Не удалось удалить временную картинку в WSL.")
+                        for temporary_path in [readable_source, *staged_references]:
+                            try:
+                                temporary_path.unlink(missing_ok=True)
+                            except OSError:
+                                LOGGER.warning("Не удалось удалить временную картинку в WSL.")
         if destination.is_symlink() or not 0 < destination.stat().st_size <= MAX_IMAGE_BYTES:
             raise ImageGenerationError("Сохранённая картинка повреждена.")
         return ImageReply(

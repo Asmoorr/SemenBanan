@@ -13,6 +13,7 @@ from semen_banan.conversation.service import ConversationService
 from semen_banan.errors import BotError
 from semen_banan.generation.prompts import load_prompts
 from semen_banan.generation.service import MusicGenerator
+from semen_banan.group import GroupCatalog
 from semen_banan.integrations.openclaw import OpenClawClient
 from semen_banan.integrations.openclaw_images import OpenClawImageGenerator
 from semen_banan.integrations.telegram import TelegramClient
@@ -37,9 +38,10 @@ async def run(mode: str, output: Path | None = None, request: str | None = None)
         gateway_client = await resource_stack.enter_async_context(
             httpx.AsyncClient(follow_redirects=False, trust_env=False),
         )
-        gateway = OpenClawClient(gateway_client, settings)
+        group = GroupCatalog.load(paths)
+        gateway = OpenClawClient(gateway_client, settings, group=group)
         music = MusicGenerator(gateway, AudioJobRunner(paths), settings.audio_timeout)
-        images = OpenClawImageGenerator(paths, settings)
+        images = OpenClawImageGenerator(paths, settings, group=group)
 
         if mode == "check-gateway":
             print(
@@ -61,6 +63,8 @@ async def run(mode: str, output: Path | None = None, request: str | None = None)
             if decision.mode != ReplyMode.MUSIC or decision.music is None:
                 raise BotError("Модель не распознала музыкальную просьбу для проверки.")
 
+            if decision.load_participant_photos:
+                current_message["load_participant_photos"] = True
             reply = await music.generate([], current_message, options=decision.music)
             destination = output or paths.runtime / "checks" / "music.ogg"
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -80,7 +84,9 @@ async def run(mode: str, output: Path | None = None, request: str | None = None)
             if decision.mode != ReplyMode.IMAGE or decision.image is None:
                 raise BotError("Модель не распознала просьбу нарисовать картинку.")
             image_reply = await images.generate(
-                decision.image, "diagnostic:" + decision.image.prompt
+                decision.image,
+                "diagnostic:" + decision.image.prompt,
+                load_participant_photos=decision.load_participant_photos,
             )
             destination = output or paths.runtime / "checks" / "image.jpg"
             destination.parent.mkdir(parents=True, exist_ok=True)

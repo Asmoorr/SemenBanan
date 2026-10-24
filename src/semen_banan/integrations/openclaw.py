@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+from typing import Any
 
 import httpx
 
@@ -13,24 +15,31 @@ from semen_banan.conversation.models import (
 )
 from semen_banan.errors import BotError
 from semen_banan.generation.prompts import PromptCatalog, load_prompts
+from semen_banan.group import GroupCatalog
 
 
 class OpenClawClient:
     """HTTP-адаптер запросов к языковой модели через OpenClaw Gateway."""
 
     def __init__(
-        self, client: httpx.AsyncClient, settings: Settings, prompts: PromptCatalog | None = None
+        self,
+        client: httpx.AsyncClient,
+        settings: Settings,
+        prompts: PromptCatalog | None = None,
+        group: GroupCatalog | None = None,
     ) -> None:
         """Инициализирует компонент и сохраняет его зависимости.
 
         :param client: HTTP-клиент для внешнего сервиса.
         :param settings: Проверенные настройки приложения.
         :param prompts: Каталог промптов; None выбирает общий файл настроек.
+        :param group: Постоянные сведения о группе и локальные фотографии.
         :return: Не возвращает значение.
         """
         self.client = client
         self.settings = settings
         self.prompts = prompts or load_prompts()
+        self.group = group if group is not None else GroupCatalog.load()
 
     @property
     def persona(self) -> str:
@@ -153,6 +162,46 @@ class OpenClawClient:
             6000,
         )
 
+    def user_content(self, user_prompt: str) -> str | list[dict[str, Any]]:
+        """Добавляет постоянные сведения о группе и запрошенные фотографии.
+
+        :param user_prompt: JSON с контекстом конкретного запроса.
+        :return: Текст JSON или мультимодальное содержимое с подписанными фото.
+        """
+        request_payload = json.loads(user_prompt)
+        current_message = request_payload.get("reply_to", request_payload.get("request", {}))
+        include_photos = (
+            isinstance(current_message, dict)
+            and current_message.get("load_participant_photos") is True
+        )
+        request_payload["group_profile"] = self.group.context()
+        request_payload["participant_photos_loaded"] = include_photos
+        text = json.dumps(request_payload, ensure_ascii=False)
+        if not include_photos:
+            return text
+
+        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        for index, photo in enumerate(self.group.photos(), 1):
+            content.append(
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {"photo_index": index, "participant_name": photo.name}, ensure_ascii=False
+                    ),
+                }
+            )
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/jpeg;base64,"
+                        + base64.b64encode(photo.data).decode("ascii"),
+                        "detail": "high",
+                    },
+                }
+            )
+        return content
+
     async def _complete(
         self, system_prompt: str, user_prompt: str, character_limit: int = 1200
     ) -> str:
@@ -174,8 +223,11 @@ class OpenClawClient:
             "stream": False,
             "tool_choice": "none",
             "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {
+                    "role": "system",
+                    "content": system_prompt + "\n\n" + self.prompts.group_instructions,
+                },
+                {"role": "user", "content": self.user_content(user_prompt)},
             ],
         }
         gateway_base_url = self.settings.base_url

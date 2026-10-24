@@ -14,6 +14,8 @@ from semen_banan.errors import BotError
 class PromptCatalog:
     """Единый каталог инструкций модели и шаблонов проверочных запросов."""
 
+    group_instructions: str
+    participant_image_template: str
     context_notice: str
     persona: str
     routing: str
@@ -71,6 +73,8 @@ class PromptCatalog:
 
             prompt_catalog = cls(
                 context_notice=read_text("context", "truncation_notice"),
+                group_instructions=read_text("group", "system"),
+                participant_image_template=read_text("group", "image_template"),
                 persona=read_text("persona", "system"),
                 routing=read_text("routing", "system"),
                 composition=read_text("composition", "system"),
@@ -99,6 +103,7 @@ class PromptCatalog:
         :return: Не возвращает значение.
         """
         templates = (
+            (self.participant_image_template, {"request", "group_profile", "photos_loaded"}),
             (self.arrangement_template, {"total_beats", "last_speech_beat", "speech_guidance"}),
             (
                 self.comparison_section_template,

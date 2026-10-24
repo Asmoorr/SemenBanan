@@ -20,6 +20,7 @@ class ContextMessage(TypedDict):
     text: str
     in_reply_to_semyon: NotRequired[str]
     music_parameters: NotRequired[dict[str, Any]]
+    load_participant_photos: NotRequired[bool]
 
 
 type ConversationContext = list[ContextMessage]

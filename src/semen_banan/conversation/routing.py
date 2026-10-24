@@ -84,6 +84,7 @@ class RouteDecision:
     music: MusicOptions | None = None
     style_request: str | None = None
     image: ImageOptions | None = None
+    load_participant_photos: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         """Преобразует объект в данные для передачи через JSON.
@@ -101,6 +102,7 @@ class RouteDecision:
             "trigger": self.trigger.value,
             "parameters": parameters,
             "style_request": self.style_request,
+            "load_participant_photos": self.load_participant_photos,
         }
 
     @classmethod
@@ -113,12 +115,15 @@ class RouteDecision:
         try:
             routing_data = json.loads(content)
 
-            if not isinstance(routing_data, dict) or set(routing_data) != {
-                "mode",
-                "trigger",
-                "parameters",
-                "style_request",
-            }:
+            required_fields = {"mode", "trigger", "parameters", "style_request"}
+            if (
+                not isinstance(routing_data, dict)
+                or not required_fields <= set(routing_data)
+                or set(routing_data) - required_fields - {"load_participant_photos"}
+            ):
+                raise ValueError
+            load_participant_photos = routing_data.get("load_participant_photos", False)
+            if type(load_participant_photos) is not bool:
                 raise ValueError
 
             mode = ReplyMode(routing_data["mode"])
@@ -138,7 +143,7 @@ class RouteDecision:
             ):
                 raise ValueError
 
-            if mode == ReplyMode.IGNORE and style_request is not None:
+            if mode == ReplyMode.IGNORE and (style_request is not None or load_participant_photos):
                 raise ValueError
 
             music = None
@@ -189,6 +194,7 @@ class RouteDecision:
                 music,
                 style_request.strip() if style_request is not None else None,
                 image,
+                load_participant_photos,
             )
         except (ValueError, TypeError, KeyError):
             raise ValueError("Неверный режим или параметры маршрутизации.") from None

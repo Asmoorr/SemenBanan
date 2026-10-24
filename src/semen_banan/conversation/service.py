@@ -18,6 +18,7 @@ from semen_banan.conversation.ports import ConversationStore, Cooldowns, Gateway
 from semen_banan.conversation.routing import MessageRouter, ReplyMode, ReplyTrigger, RouteDecision
 from semen_banan.errors import BotError
 from semen_banan.generation.service import MusicGenerator
+from semen_banan.group import ParticipantPhotosError
 from semen_banan.integrations.openclaw_images import ImageGenerationError, OpenClawImageGenerator
 
 LOGGER = logging.getLogger(__name__)
@@ -249,6 +250,8 @@ class ConversationService:
 
         try:
             current_message = self.current_message(message)
+            if decision.load_participant_photos:
+                current_message["load_participant_photos"] = True
             parent_message_id = (message.get("reply_to_message") or {}).get("message_id")
             conversation_context = self.context_builder.build(
                 chat_id, topic_id, parent_message_id, message["message_id"]
@@ -274,9 +277,16 @@ class ConversationService:
                 assert decision.image is not None
                 if self.images is None:
                     raise ImageGenerationError("Генерация картинок не настроена.")
-                image_reply = await self.images.generate(
-                    decision.image, f"{chat_id}:{message['message_id']}"
-                )
+                if decision.load_participant_photos:
+                    image_reply = await self.images.generate(
+                        decision.image,
+                        f"{chat_id}:{message['message_id']}",
+                        load_participant_photos=True,
+                    )
+                else:
+                    image_reply = await self.images.generate(
+                        decision.image, f"{chat_id}:{message['message_id']}"
+                    )
                 sent = await self.telegram.send_photo(
                     chat_id,
                     message["message_id"],
@@ -294,7 +304,7 @@ class ConversationService:
             self.memory.record_bot(sent, chat_id, topic_id, message["message_id"], answer)
             self.memory.forget_reply(chat_id, message["message_id"])
             LOGGER.info("Ответ отправлен: chat_id=%s, trigger=%s", chat_id, reply_kind)
-        except ImageGenerationError as exc:
+        except (ImageGenerationError, ParticipantPhotosError) as exc:
             LOGGER.warning("%s", exc)
             try:
                 sent = await self.send_text(chat_id, message["message_id"], str(exc), topic_id)
