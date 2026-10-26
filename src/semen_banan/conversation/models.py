@@ -36,6 +36,7 @@ class RoutingMetadata(TypedDict, total=False):
     mentions_bot: bool
     content_type: str
     sticker_emoji: str
+    available_reactions: list[str]
     force_addressed: bool
 
 

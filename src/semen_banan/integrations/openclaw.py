@@ -100,7 +100,7 @@ class OpenClawClient:
         :return: JSON-ответ маршрутизатора модели.
         """
         return await self._complete(
-            self.prompts.routing,
+            self.prompts.routing + "\n" + self.prompts.reactions,
             json.dumps(
                 {
                     "conversation_chain": conversation_context,

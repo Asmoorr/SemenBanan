@@ -78,7 +78,9 @@ class PromptInjection(unittest.IsolatedAsyncioTestCase):
         await gateway.reply([], current_message)
         self.assertEqual(gateway._complete.await_args.args[0], prompts.persona)
         await gateway.classify([], current_message, {})
-        self.assertEqual(gateway._complete.await_args.args[0], prompts.routing)
+        self.assertEqual(
+            gateway._complete.await_args.args[0], prompts.routing + "\n" + prompts.reactions
+        )
         await gateway.compose([], current_message)
         self.assertEqual(gateway._complete.await_args.args[0], prompts.composition)
         await gateway.arrange([], current_message, beats=64)

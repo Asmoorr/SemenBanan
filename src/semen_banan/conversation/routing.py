@@ -87,6 +87,7 @@ class RouteDecision:
     style_request: str | None = None
     image: ImageOptions | None = None
     load_participant_photos: bool = False
+    reaction: object = None
 
     def to_payload(self) -> dict[str, Any]:
         """Преобразует объект в данные для передачи через JSON.
@@ -105,6 +106,7 @@ class RouteDecision:
             "parameters": parameters,
             "style_request": self.style_request,
             "load_participant_photos": self.load_participant_photos,
+            "reaction": self.reaction,
         }
 
     @classmethod
@@ -121,7 +123,7 @@ class RouteDecision:
             if (
                 not isinstance(routing_data, dict)
                 or not required_fields <= set(routing_data)
-                or set(routing_data) - required_fields - {"load_participant_photos"}
+                or set(routing_data) - required_fields - {"load_participant_photos", "reaction"}
             ):
                 raise ValueError
             load_participant_photos = routing_data.get("load_participant_photos", False)
@@ -206,6 +208,7 @@ class RouteDecision:
                 style_request.strip() if style_request is not None else None,
                 image,
                 load_participant_photos,
+                routing_data.get("reaction"),
             )
         except (ValueError, TypeError, KeyError):
             raise ValueError("Неверный режим или параметры маршрутизации.") from None

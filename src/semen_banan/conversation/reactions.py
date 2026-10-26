@@ -154,12 +154,17 @@ class ReactionService:
         message: TelegramMessage,
         context: ConversationContext,
         style_requests: list[str] | None = None,
+        *,
+        classified: bool = False,
+        selection_payload: object = None,
     ) -> None:
-        """Независимо выбирает шанс и просит модель подобрать реакцию по смыслу.
+        """Применяет вероятность к готовой реакции или отдельно запрашивает её у модели.
 
         :param message: Новое сообщение другого автора.
         :param context: Контекст соответствующей темы или цепочки.
         :param style_requests: Сохранённые пожелания к манере общения.
+        :param classified: Использовать результат общей классификации без нового вызова LLM.
+        :param selection_payload: Поле reaction из общего решения маршрутизатора.
         :return: Не возвращает значение.
         """
         if not self.eligible(message):
@@ -193,10 +198,15 @@ class ReactionService:
                 "content_type": next((key for key in _CONTENT_TYPES if key in message), "unknown"),
                 "sticker_emoji": (message.get("sticker") or {}).get("emoji", ""),
             }
-            content = await asyncio.wait_for(
-                self.gateway.select_reaction(context, current, metadata, allowed, style_requests),
-                timeout=min(15, self.settings.timeout),
-            )
+            if classified:
+                content = json.dumps(selection_payload, ensure_ascii=False)
+            else:
+                content = await asyncio.wait_for(
+                    self.gateway.select_reaction(
+                        context, current, metadata, allowed, style_requests
+                    ),
+                    timeout=min(15, self.settings.timeout),
+                )
             selection = ReactionSelection.parse(content, allowed)
             addressed = selection.addressed_to_bot or bool(
                 metadata.get("reply_to_bot") or metadata.get("mentions_bot")

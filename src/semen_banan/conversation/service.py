@@ -122,7 +122,7 @@ class ConversationService:
         :return: Не возвращает значение.
         """
         reply_eligible = self.eligible(message)
-        if self.reactions is not None and self.reactions.eligible(message):
+        if not reply_eligible and self.reactions is not None and self.reactions.eligible(message):
             context = self.context_builder.build(
                 message["chat"]["id"],
                 message.get("message_thread_id") or 0,
@@ -171,6 +171,13 @@ class ConversationService:
             ),
         }
 
+        if self.reactions is not None and self.reactions.eligible(message):
+            try:
+                metadata["available_reactions"] = await self.reactions.available_reactions(chat_id)
+            except BotError as exc:
+                LOGGER.warning("Не удалось получить доступные реакции: %s", exc)
+                metadata["available_reactions"] = []
+
         try:
             decision = await self.router.route(
                 conversation_context,
@@ -183,6 +190,15 @@ class ConversationService:
             self.memory.queue_reply(message, "classify", time.time() + 30)
 
             return
+
+        if self.reactions is not None and metadata.get("available_reactions"):
+            await self.reactions.maybe_react(
+                message,
+                conversation_context,
+                self.memory.style_requests(chat_id),
+                classified=True,
+                selection_payload=decision.reaction,
+            )
 
         LOGGER.info(
             "Режим определён: chat_id=%s, message_id=%s, mode=%s, trigger=%s",

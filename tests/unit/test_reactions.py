@@ -194,13 +194,18 @@ class ReactionBehavior(unittest.IsolatedAsyncioTestCase):
         self.gateway.select_reaction.assert_not_awaited()
 
     async def test_reaction_failure_does_not_block_regular_reply(self) -> None:
-        """Продолжает обычный ответ при недоступном выборе реакции.
+        """Продолжает обычный ответ при недопустимой реакции в общей классификации.
 
         :return: Не возвращает значение.
         """
         with tempfile.TemporaryDirectory() as directory:
-            self.gateway.select_reaction.side_effect = BotError("Модель недоступна")
-            self.gateway.classify.return_value = route_json()
+            payload = json.loads(route_json())
+            payload["reaction"] = {
+                "addressed_to_bot": True,
+                "emoji": "🔥",
+                "explicit_request": False,
+            }
+            self.gateway.classify.return_value = json.dumps(payload)
             self.gateway.reply.return_value = "Привет"
             bot = create_service(
                 replace(self.settings, cooldown=0),
@@ -214,10 +219,59 @@ class ReactionBehavior(unittest.IsolatedAsyncioTestCase):
                 with patch("semen_banan.conversation.reactions.random.random", return_value=0):
                     await bot.handle(message())
                 self.gateway.reply.assert_awaited_once()
+                self.gateway.select_reaction.assert_not_awaited()
                 self.assertEqual(self.telegram.call.await_args.args[0], "sendMessage")
                 self.assertIsNone(bot.memory.next_reply_due())
             finally:
                 bot.memory.close()
+
+    async def test_combined_classification_avoids_separate_reaction_call(self) -> None:
+        """Получает реакцию вместе с маршрутом, сохраняя вероятности и явные просьбы."""
+        cases = (
+            ("ignore", False, False, 0.099, True),
+            ("ignore", False, False, 0.1, False),
+            ("text", True, False, 0.3, True),
+            ("text", True, False, 1 / 3, False),
+            ("ignore", True, True, 0.999, True),
+        )
+        for mode, addressed, explicit, chance, sends in cases:
+            with self.subTest(mode=mode, chance=chance), tempfile.TemporaryDirectory() as directory:
+                self.telegram.reset_mock()
+                self.gateway.reset_mock()
+                self.service.seen.clear()
+                self.service.allowed_cache[-123] = (float("inf"), ["👍"])
+                payload = json.loads(route_json(mode))
+                payload["reaction"] = {
+                    "addressed_to_bot": addressed,
+                    "emoji": "👍",
+                    "explicit_request": explicit,
+                }
+                self.gateway.classify.return_value = json.dumps(payload)
+                self.gateway.reply.return_value = "Привет"
+                bot = create_service(
+                    replace(self.settings, cooldown=0, spontaneous_probability=0),
+                    self.telegram,
+                    self.gateway,
+                    {"id": 1, "username": "semen_bot"},
+                    Path(directory) / "state.json",
+                )
+                bot.reactions = self.service
+                try:
+                    with patch(
+                        "semen_banan.conversation.reactions.random.random", return_value=chance
+                    ):
+                        await bot.handle(message())
+                    self.gateway.classify.assert_awaited_once()
+                    self.gateway.select_reaction.assert_not_awaited()
+                    metadata = self.gateway.classify.await_args.args[2]
+                    self.assertEqual(metadata["available_reactions"], ["👍"])
+                    sent = any(
+                        call.args[0] == "setMessageReaction"
+                        for call in self.telegram.call.await_args_list
+                    )
+                    self.assertEqual(sent, sends)
+                finally:
+                    bot.memory.close()
 
     async def test_telegram_payload(self) -> None:
         """Проверяет настоящий формат HTTP-запроса реакции без отправки в группу.
